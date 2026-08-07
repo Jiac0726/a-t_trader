@@ -88,10 +88,11 @@ def run_live_validation(
     while reporting unavailable long-window BSE public history as a visible WARN
     when no authorized/local history source is configured.
 
-    Explicit representative codes are always hard checks. Market coverage is a
-    separate concern: for any required/warning market not already covered by an
-    explicit representative, the validator probes a bounded sequence of current
-    universe candidates and records the first usable daily history window.
+    Explicit representative codes are always hard checks. Required market
+    probes may search a bounded candidate set. Warning-only probes are diagnostic
+    and intentionally try only one representative to avoid turning a known
+    unsupported public-history path into a long CI timeout. For BSE, native
+    ``920002`` is preferred when it is present in the current universe.
     """
     end = end or date.today()
     start_daily = end - timedelta(days=45)
@@ -151,12 +152,16 @@ def run_live_validation(
             if market in covered_markets:
                 return
 
-            def market_daily_check(market=market):
+            def market_daily_check(market=market, warning=warning):
                 subset = universe[universe["market"] == market]
                 if subset.empty:
                     raise RuntimeError(f"no {market} candidates in current universe")
+                candidates = subset["code"].astype(str).str.zfill(6).tolist()
+                if market == "BJ" and "920002" in candidates:
+                    candidates = ["920002", *[code for code in candidates if code != "920002"]]
+                probe_limit = 1 if warning else max(1, int(market_candidate_limit))
                 attempts: list[str] = []
-                for code in subset["code"].astype(str).str.zfill(6).head(max(1, int(market_candidate_limit))):
+                for code in candidates[:probe_limit]:
                     if code in explicit_codes:
                         continue
                     try:
@@ -168,15 +173,16 @@ def run_live_validation(
                                 "code": code,
                                 "rows": len(df),
                                 "provider": provider_name,
-                                "selection": "first_usable_current_universe_candidate",
+                                "selection": "preferred_or_first_usable_current_universe_candidate",
                                 "attempted_before_success": attempts,
+                                "warning_only_probe": warning,
                             },
                         )
                     except Exception as exc:
                         attempts.append(f"{code}: {exc}")
                 sample = attempts[:5]
                 raise RuntimeError(
-                    f"no usable {market} daily representative among first {market_candidate_limit} candidates; "
+                    f"no usable {market} daily representative among {probe_limit} candidate(s); "
                     f"sample_errors={sample}"
                 )
 
