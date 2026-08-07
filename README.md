@@ -213,3 +213,50 @@ python -m app.calibration_cli 300059 --provider auto --days 500 --horizon 5 \
 ## 性能修复：历史最佳T空间 O(n)
 
 历史 `hindsight_envelope` 已从逐日枚举全部5分钟买卖组合的 O(n²) 实现改为等价 O(n) 实现。算法分别维护“此前最低买入总成本”或“此前最高卖出净回款”，仍精确保留最低佣金、卖出印花税、其他费率与滑点。随机价格序列回归测试会将线性算法与穷举算法逐笔对比净收益，确保性能优化没有改变结果。
+
+## 多股票横截面 OOS 校准
+
+单只股票时间序列验证只能回答“这只票自己的历史分数是否领先自己的未来机会”。最终全市场做T筛选更关键的问题是：**同一个交易日的候选股票里，高 T Score 的股票是否真的拥有更大的未来净T机会**。
+
+横截面校准按“日期 × 股票”构建面板，并采用成熟因子研究中常见的逐日 Spearman Rank IC、分位组未来机会和 Top-Bottom 差值口径。命令行示例：
+
+```bash
+python -m app.cross_sectional_cli \
+  --provider demo \
+  --codes 300059,601899,601138,000063,300750,300308 \
+  --days 500 --horizon 5 --min-assets 5 \
+  --candidates 128 --random-trials 100
+```
+
+外层训练/测试仍按日期严格 walk-forward，并保留 `gap=horizon`；每个训练窗口内部独立选择权重，未来测试日期只用于最终 OOS 评价。输出包括：
+
+- 逐日横截面 Rank IC
+- Rank IC 正值比例、标准差和 ICIR
+- 按日分位组未来净T机会
+- Top-Bottom 分位差
+- 优化权重 vs v0.1 / 振幅 / 流动性 / 日内空间
+- 随机零假设百分位与经验 p 值
+- 横截面专属晋级门槛
+
+横截面优化内核会预计算每个日期的特征矩阵和标签排名，再使用 NumPy 评估候选权重，避免候选数增加时重复执行昂贵的 pandas groupby/rank。
+
+**重要限制：真实历史横截面研究不能只拿“今天仍上市的股票”回看过去。** 这会产生幸存者偏差。正式全市场校准需要点时（point-in-time）股票池，至少正确处理历史上市、退市、停牌和可交易状态；在完成这一层之前，横截面结果只能作为研究诊断，不生成正式 T Score v0.2 权重。
+
+## v0.2 联网合并前验收
+
+宽基市场状态现在使用显式参考资产，不再把 `000300` 之类六码按普通股票处理。可单独验证指数或ETF：
+
+```bash
+python -m app.benchmark_cli csi300 --provider auto --days 500
+python -m app.benchmark_cli csi300_etf_sh --provider auto --days 120
+python -m app.regime_cli --benchmark csi300 --provider auto --days 500
+```
+
+完整联网合并门槛：
+
+```bash
+python -m app.live_validate_cli --provider auto --benchmark-provider auto \
+  --benchmark csi300 --reference-etf csi300_etf_sh --with-baostock
+```
+
+该命令检查沪深北当前股票池、各市场代表日K、5分钟K、宽基指数、ETF、BaoStock点时证券快照、沪深跨源成员重合率，以及临时 DuckDB K线/证券快照读写。详细说明见 `docs/LIVE_VALIDATION.md`。当前执行环境若无法联网或缺少 DuckDB/BaoStock，报告应明确失败，而不是把未执行检查标成通过。
