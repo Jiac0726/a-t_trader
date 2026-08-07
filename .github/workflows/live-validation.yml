@@ -10,6 +10,7 @@ on:
       - "calibration/**"
       - "core/**"
       - "data/**"
+      - "dataset/**"
       - "features/**"
       - "providers/**"
       - "scanner/**"
@@ -41,7 +42,7 @@ jobs:
       - name: Run unit and regression tests
         run: python -m pytest -q
       - name: Compile Python modules
-        run: python -m compileall -q app backtest calibration core data features providers scanner scoring storage validation tests
+        run: python -m compileall -q app backtest calibration core data dataset features providers scanner scoring storage validation tests
 
   live-data-validation:
     needs: offline-regression
@@ -49,7 +50,8 @@ jobs:
     timeout-minutes: 15
     env:
       # Optional authorized fallback. When this secret is absent the value is
-      # empty and the provider is not added to the auto chain.
+      # empty and the provider is not added to the auto chain. With a token,
+      # BSE long-history validation becomes hard again automatically.
       TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
     steps:
       - uses: actions/checkout@v4
@@ -69,6 +71,7 @@ jobs:
             --benchmark csi300 \
             --reference-etf csi300_etf_sh \
             --with-baostock \
+            --allow-missing-bj-history \
             --json-out output/live_validation.json
       - name: Upload live validation report
         if: always()
