@@ -1,0 +1,20 @@
+[project]
+name = "a-t-trader"
+version = "0.1.0"
+description = "A-share historical T-trading suitability analyzer"
+requires-python = ">=3.10"
+dependencies = [
+  "pandas>=2.2",
+  "numpy>=2.0",
+  "requests>=2.31",
+  "duckdb>=1.1",
+  "streamlit>=1.40",
+]
+
+[project.optional-dependencies]
+akshare = ["akshare>=1.17"]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

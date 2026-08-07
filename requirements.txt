@@ -1,0 +1,7 @@
+pandas>=2.2
+numpy>=2.0
+requests>=2.31
+duckdb>=1.1
+streamlit>=1.40
+# Optional fallback provider:
+# akshare>=1.17
