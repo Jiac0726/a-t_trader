@@ -132,7 +132,11 @@ def main() -> None:
     parser.add_argument("--benchmark-provider", choices=["auto", "eastmoney", "akshare"], default="auto")
     parser.add_argument("--benchmark", choices=sorted(BENCHMARKS), default="csi300")
     parser.add_argument("--reference-etf", choices=[""] + sorted(ETFS), default="csi300_etf_sh")
-    parser.add_argument("--codes", default="600519,000001,300750")
+    # Explicitly include one native 920 BSE listing. This avoids wasting the
+    # merge gate on a broad candidate sweep while still making BSE history a
+    # hard, deterministic check. Migrated-code continuity remains a separate
+    # informational probe below.
+    parser.add_argument("--codes", default="600519,000001,300750,920002")
     parser.add_argument("--db", default="market.duckdb")
     parser.add_argument("--with-baostock", action="store_true")
     parser.add_argument("--skip-duckdb", action="store_true")
