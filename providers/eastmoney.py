@@ -18,7 +18,14 @@ class EastmoneyProvider(MarketDataProvider):
     """
 
     name = "eastmoney-direct"
-    _HISTORY_URL = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
+    # AKShare and other current adapters use several numbered push2his hosts for
+    # equivalent K-line endpoints. Keep history failover independent from the
+    # current-list host preference so one blocked node does not poison both.
+    _HISTORY_URLS = (
+        "https://push2his.eastmoney.com/api/qt/stock/kline/get",
+        "https://33.push2his.eastmoney.com/api/qt/stock/kline/get",
+        "https://63.push2his.eastmoney.com/api/qt/stock/kline/get",
+    )
     # Eastmoney routes the same public clist service through several numbered
     # hosts. Cloud/CI egress IPs are sometimes throttled on only one of them,
     # so rotate across known-compatible HTTPS hosts before declaring failure.
@@ -34,6 +41,7 @@ class EastmoneyProvider(MarketDataProvider):
         self.min_interval = min_interval
         self._last_call = 0.0
         self._preferred_list_url: str | None = None
+        self._preferred_history_url: str | None = None
         self.session = requests.Session()
         self.session.headers.update(
             {
@@ -114,6 +122,25 @@ class EastmoneyProvider(MarketDataProvider):
                 if self._preferred_list_url == url:
                     self._preferred_list_url = None
         raise MarketDataError("Eastmoney host rotation exhausted: " + " | ".join(errors))
+
+    def _get_history_json(self, params: dict[str, Any]) -> dict[str, Any]:
+        errors: list[str] = []
+        ordered = list(self._HISTORY_URLS)
+        if self._preferred_history_url in ordered:
+            ordered.remove(self._preferred_history_url)
+            ordered.insert(0, self._preferred_history_url)
+        for url in ordered:
+            try:
+                payload = self._get_json(url, params)
+                if payload.get("data") is None:
+                    raise MarketDataError("Eastmoney history returned data=null")
+                self._preferred_history_url = url
+                return payload
+            except Exception as exc:
+                errors.append(f"{url.split('/')[2]}: {exc}")
+                if self._preferred_history_url == url:
+                    self._preferred_history_url = None
+        raise MarketDataError("Eastmoney history host rotation exhausted: " + " | ".join(errors))
 
     def stock_list(self) -> pd.DataFrame:
         # Eastmoney currently caps clist/get responses well below arbitrarily
@@ -203,7 +230,7 @@ class EastmoneyProvider(MarketDataProvider):
             "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
         }
         try:
-            payload = self._get_json(self._HISTORY_URL, params)
+            payload = self._get_history_json(params)
         except MarketDataError as exc:
             raise MarketDataError(f"Eastmoney request failed for {code}: {exc}") from exc
 
@@ -244,6 +271,7 @@ class EastmoneyProvider(MarketDataProvider):
         df.attrs["name"] = data.get("name", "")
         df.attrs["code"] = data.get("code", code)
         df.attrs["provider"] = self.name
+        df.attrs["eastmoney_history_url"] = self._preferred_history_url or ""
         return df
 
     def stock_name(self, code: str) -> str:
