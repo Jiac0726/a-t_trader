@@ -1,51 +1,69 @@
 # v0.2 联网合并前验收
 
-本地单元测试不能替代真实上游接口回归。`app.live_validate_cli` 用于联网开发机上的合并前检查，并输出机器可读 JSON。
+本文件定义 `dev/v0.2-market-scanner` 合入 `main` 之前必须在真实联网开发机执行的端到端检查。
 
-## 推荐命令
+## 为什么不能只看 pytest
+
+离线单元测试能证明缓存、回测、校准和防泄漏控制流符合设计，但不能证明公开行情源今天仍可访问，也不能证明第三方数据源对沪深北和历史证券名单的真实覆盖完整。因此真实数据回归必须单独保存报告。
+
+## 开源实现参考
+
+- `simonlin1212/a-stock-data` 当前把指数/ETF当成独立行情类型处理，并强调行情源需要降级；本项目继续采用独立 Provider + fallback 思路，不直接复制其代码。
+- AKShare 当前 `stock_zh_index_daily_em` 对 `sz/sh/csi` 使用明确市场标识，其中中证系列使用 `2.xxxxxx`；ETF `fund_etf_hist_em` 使用沪市 `1`、深市 `0` 的 market id。本项目据此将证券类型显式化，不再用六码本身猜“股票还是指数”。
+
+## 宽基/ETF参考资产
+
+当前内置：
+
+- 指数：上证指数、沪深300、中证500、中证1000、深证成指、创业板指、科创50
+- ETF：上证50ETF、沪/深两只沪深300ETF、中证500ETF、创业板ETF、科创50ETF
+
+中证指数在 Eastmoney 不同接口中可能出现不同 namespace，因此 `csi300/csi500/csi1000` 会按声明顺序尝试多个 secid，并记录最终实际命中的 secid。
+
+## 建议安装
 
 ```bash
 pip install -r requirements.txt
-pip install akshare baostock
+pip install akshare
+pip install "baostock>=0.9.3"
+pip install duckdb
+```
+
+## 一键联网验收
+
+```bash
 python -m app.live_validate_cli \
   --provider auto \
   --benchmark-provider auto \
   --benchmark csi300 \
+  --reference-etf csi300_etf_sh \
   --with-baostock \
-  --db market.duckdb
+  --json-out output/live_validation.json
 ```
 
-默认检查：
+成功退出码为 `0`；存在硬失败时退出码为 `2`。
 
-1. 当前 A 股股票池数量与 SH/SZ 市场覆盖；异常小结果直接 FAIL。
-2. 代表性股票最近日 K 是否可解析。
-3. 代表性股票 5 分钟 K 是否可解析。
-4. 明确证券类型的宽基指数历史行情，例如 `csi300`。
-5. 可选 BaoStock 点时历史证券快照。
-6. DuckDB 实际写入/读取 round-trip。
+## 硬检查
 
-输出默认写入 `output/live_validation.json`。存在硬 FAIL 时进程退出码为 2，可直接接 CI/发布脚本。
+1. 当前A股股票池总数不低于最低门槛。
+2. 默认必须同时存在 SH / SZ / BJ。
+3. 用户给定代表股票 + 股票池中自动抽取的各市场样本都能获取近期日K。
+4. 至少一个代表股票能获取5分钟K。
+5. 显式宽基指数能获取日K，且资产类型为 `index`。
+6. 显式ETF能获取日K，且资产类型为 `etf`。
+7. 启用 BaoStock 后，历史/当前点时快照不能异常偏小。
+8. Eastmoney/AKShare 当前股票池与 BaoStock 点时快照在沪深市场的代码重合率必须达到配置阈值（默认90%）。
+9. DuckDB 使用临时数据库完成 K 线和证券快照写入/读取，不污染正式 `market.duckdb`。
 
-## 宽基指数为什么独立建模
+## 北交所处理
 
-六位代码不足以唯一表达证券类型。例如 `000300` 作为沪深300指数在东方财富 K 线接口使用 `1.000300`；如果套用股票市场前缀猜测，会把它错误映射为深市普通证券。因此市场状态研究使用 `BenchmarkSpec` 显式注册表，不再依赖代码猜类型。
+北交所对当前全A股扫描是硬要求：市场行情股票池默认必须有 BJ。
 
-当前注册：
+BaoStock 的北交所历史证券主表覆盖仍需要独立来源交叉验证，因此 `point_in_time_overlap_bj` 当前只作为警告项；不能因为该项 PASS 就宣称北交所历史点时名单已经权威验证。
 
-- `sse` 上证指数
-- `csi300` 沪深300
-- `csi500` 中证500
-- `csi1000` 中证1000
-- `szse` 深证成指
-- `chinext` 创业板指
-- `star50` 科创50
+## 不能降低的合并门槛
 
-## 合并门槛
-
-单次 PASS 仍不足以生成正式 T Score v0.2 权重。至少还需：
-
-- 不同日期重复执行真实接口回归；
-- 沪深北股票数量与独立来源交叉检查；
-- BaoStock 历史快照抽样核对退市、停牌、未来 IPO 与北交所样本；
-- DuckDB 旧库升级/新库创建均验证；
-- 真实多股票横截面 OOS + 市场状态分层通过晋级门槛。
+- 不能用 `--allow-missing-bj` 跑过一次就视为正式通过；该参数只用于定位某个数据源是否缺北交所。
+- 不能仅靠 AKShare 与 Eastmoney 互相证明股票池完整，因为 AKShare 的部分接口本身也可能使用 Eastmoney 上游。
+- 必须保留生成的 JSON 报告，记录执行日期、实际命中 Provider 和失败/警告项。
+- 真实多股票 OOS / regime 分层结果没有通过晋级门槛前，不生成正式 T Score v0.2 权重。
