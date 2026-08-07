@@ -23,7 +23,7 @@ from storage.duckdb_store import DuckDBStore
 from storage.security_snapshot_store import DuckDBSecuritySnapshotStore
 from providers.baostock_master import BaostockSecurityMasterProvider
 from providers.security_master import filter_panel_by_lifecycle, filter_panel_by_snapshots
-from providers.benchmark import BENCHMARKS, AkshareBenchmarkProvider, BenchmarkProviderChain, EastmoneyBenchmarkProvider
+from providers.benchmark import REFERENCE_ASSETS, make_benchmark_provider
 from data.cached_security_master import CachedSecurityMasterProvider
 
 
@@ -47,7 +47,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--db", default="market.duckdb")
     parser.add_argument("--no-cache", action="store_true")
-    parser.add_argument("--regime-benchmark", choices=[""] + sorted(BENCHMARKS), default="", help="preferred explicit broad-market benchmark for causal regime labels")
+    parser.add_argument("--regime-benchmark", choices=[""] + sorted(REFERENCE_ASSETS), default="", help="preferred explicit broad-market index/ETF reference for causal regime labels")
     parser.add_argument("--regime-code", default="", help="legacy stock/proxy code for regime labels; prefer --regime-benchmark")
     parser.add_argument("--security-master", choices=["none", "baostock-lifecycle", "baostock-snapshot"], default="none", help="optional point-in-time universe filter before cross-sectional calibration")
     args = parser.parse_args()
@@ -82,22 +82,15 @@ def main() -> None:
         before = len(panel)
         panel = filter_panel_by_snapshots(panel, snapshots, include_suspended=False, unknown_dates="drop")
         print(f"exact historical snapshot filter (tradable only): {before} -> {len(panel)} rows; snapshots={snapshots['as_of'].nunique() if not snapshots.empty else 0}")
-
     regime_source = ""
     regime_daily = None
     if args.regime_benchmark:
-        if args.provider == "eastmoney":
-            benchmark_provider = EastmoneyBenchmarkProvider()
-        elif args.provider == "akshare":
-            benchmark_provider = AkshareBenchmarkProvider()
-        else:
-            benchmark_provider = BenchmarkProviderChain()
+        benchmark_provider = make_benchmark_provider(args.provider)
         regime_daily = validate_ohlcv(benchmark_provider.history(args.regime_benchmark, start, end, interval="1d"))
-        regime_source = f"benchmark:{args.regime_benchmark}"
+        regime_source = f"reference:{args.regime_benchmark}"
     elif args.regime_code:
         regime_daily = validate_ohlcv(provider.history(args.regime_code, start, end, interval="1d", adjust="qfq"))
         regime_source = f"legacy-code:{args.regime_code}"
-
     if regime_daily is not None:
         regime_history = classify_price_regime(regime_daily)
         before = len(panel)
