@@ -17,13 +17,14 @@ from calibration.cross_sectional import (
 from calibration.walkforward import attach_forward_labels, build_opportunity_history, build_score_history
 from calibration.regime_analysis import regime_coverage, summarize_cross_sectional_by_regime
 from data.cached_provider import CachedProvider
-from data.cached_security_master import CachedSecurityMasterProvider
 from data.validator import validate_ohlcv
 from features.regime import attach_market_regime, classify_price_regime
-from providers.baostock_master import BaostockSecurityMasterProvider
-from providers.security_master import filter_panel_by_lifecycle, filter_panel_by_snapshots
 from storage.duckdb_store import DuckDBStore
 from storage.security_snapshot_store import DuckDBSecuritySnapshotStore
+from providers.baostock_master import BaostockSecurityMasterProvider
+from providers.security_master import filter_panel_by_lifecycle, filter_panel_by_snapshots
+from providers.benchmark import BENCHMARKS, AkshareBenchmarkProvider, BenchmarkProviderChain, EastmoneyBenchmarkProvider
+from data.cached_security_master import CachedSecurityMasterProvider
 
 
 def _parse_codes(value: str) -> list[str]:
@@ -46,7 +47,8 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--db", default="market.duckdb")
     parser.add_argument("--no-cache", action="store_true")
-    parser.add_argument("--regime-code", default="", help="optional benchmark/proxy code for causal market-regime stratification")
+    parser.add_argument("--regime-benchmark", choices=[""] + sorted(BENCHMARKS), default="", help="preferred explicit broad-market benchmark for causal regime labels")
+    parser.add_argument("--regime-code", default="", help="legacy stock/proxy code for regime labels; prefer --regime-benchmark")
     parser.add_argument("--security-master", choices=["none", "baostock-lifecycle", "baostock-snapshot"], default="none", help="optional point-in-time universe filter before cross-sectional calibration")
     args = parser.parse_args()
 
@@ -80,12 +82,27 @@ def main() -> None:
         before = len(panel)
         panel = filter_panel_by_snapshots(panel, snapshots, include_suspended=False, unknown_dates="drop")
         print(f"exact historical snapshot filter (tradable only): {before} -> {len(panel)} rows; snapshots={snapshots['as_of'].nunique() if not snapshots.empty else 0}")
-    if args.regime_code:
+
+    regime_source = ""
+    regime_daily = None
+    if args.regime_benchmark:
+        if args.provider == "eastmoney":
+            benchmark_provider = EastmoneyBenchmarkProvider()
+        elif args.provider == "akshare":
+            benchmark_provider = AkshareBenchmarkProvider()
+        else:
+            benchmark_provider = BenchmarkProviderChain()
+        regime_daily = validate_ohlcv(benchmark_provider.history(args.regime_benchmark, start, end, interval="1d"))
+        regime_source = f"benchmark:{args.regime_benchmark}"
+    elif args.regime_code:
         regime_daily = validate_ohlcv(provider.history(args.regime_code, start, end, interval="1d", adjust="qfq"))
+        regime_source = f"legacy-code:{args.regime_code}"
+
+    if regime_daily is not None:
         regime_history = classify_price_regime(regime_daily)
         before = len(panel)
         panel = attach_market_regime(panel, regime_history, unknown="drop")
-        print(f"market regime filter/attach: {before} -> {len(panel)} rows using {args.regime_code}")
+        print(f"market regime filter/attach: {before} -> {len(panel)} rows using {regime_source}")
         print("\nRegime coverage:")
         print(regime_coverage(panel).to_string(index=False))
         print("\nFixed-score cross-sectional diagnostics by market regime:")
@@ -118,7 +135,7 @@ def main() -> None:
     print(weights.to_string(index=False) if not weights.empty else "Not enough dates")
     print("\nCross-sectional promotion gate:")
     print(assess_cross_sectional_promotion_gate(metrics))
-    print("\nWarning: formal calibration still requires real source-coverage validation; point-in-time and regime filtering prevent known leakage classes but do not certify data completeness.")
+    print("\nWarning: real historical calibration must use a point-in-time universe; using only today's surviving stocks can create survivorship bias.")
 
 
 if __name__ == "__main__":
