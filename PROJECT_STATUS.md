@@ -72,7 +72,7 @@
 
 ## 当前验证
 
-- pytest：55/55 通过
+- pytest：60/60 通过
 - Python compileall：通过
 - Demo 全市场扫描：通过
 - 500天 Demo 固定校准：约 1.3 秒（当前容器）
@@ -91,3 +91,11 @@
 - [x] 点时（point-in-time）历史股票池框架：BaoStock历史快照 + 生命周期 fallback + DuckDB 快照缓存（真实覆盖仍待真机回归）
 - [x] 市场状态分层诊断框架（真实宽基指数 OOS 验证仍待完成）
 - [ ] 只有真实多股票 OOS 晋级门槛通过后，才生成 T Score v0.2 正式权重
+
+## v0.2 Stage 11
+
+- [x] 显式宽基指数 Provider
+- [x] 东财指数直连 + AKShare 指数备用源
+- [x] 市场状态 CLI 默认使用 benchmark key
+- [x] 联网 live validation suite 与 JSON 验收报告
+- [x] pytest：60/60 通过
