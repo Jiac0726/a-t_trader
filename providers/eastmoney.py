@@ -33,6 +33,7 @@ class EastmoneyProvider(MarketDataProvider):
         self.timeout = timeout
         self.min_interval = min_interval
         self._last_call = 0.0
+        self._preferred_list_url: str | None = None
         self.session = requests.Session()
         self.session.headers.update(
             {
@@ -92,14 +93,21 @@ class EastmoneyProvider(MarketDataProvider):
 
     def _get_json_any(self, urls: tuple[str, ...], params: dict[str, Any]) -> dict[str, Any]:
         errors: list[str] = []
-        for url in urls:
+        ordered = list(urls)
+        if self._preferred_list_url in ordered:
+            ordered.remove(self._preferred_list_url)
+            ordered.insert(0, self._preferred_list_url)
+        for url in ordered:
             try:
                 payload = self._get_json(url, params)
                 if payload.get("data") is None:
                     raise MarketDataError("Eastmoney returned data=null")
+                self._preferred_list_url = url
                 return payload
             except Exception as exc:
                 errors.append(f"{url.split('/')[2]}: {exc}")
+                if self._preferred_list_url == url:
+                    self._preferred_list_url = None
         raise MarketDataError("Eastmoney host rotation exhausted: " + " | ".join(errors))
 
     def stock_list(self) -> pd.DataFrame:
