@@ -5,18 +5,14 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+from app.cli import make_provider, make_raw_provider
 from data.cached_provider import CachedProvider
 from data.hydrator import hydrate_codes
 from data.validator import validate_ohlcv
 from backtest.t_engine import CostModel, best_single_t_envelope, mean_reversion_backtest, summarize_trades
 from features.daily import daily_features
 from features.intraday import intraday_opportunity_features
-from providers.akshare_provider import AkshareProvider
-from providers.chain import ProviderChain
-from providers.demo import DemoProvider
-from providers.eastmoney import EastmoneyProvider
 from providers.health import check_provider_health
-from providers.retrying import RetryingProvider
 from scanner.market_scanner import scan_codes, select_universe
 from scoring.t_score import build_t_score
 from storage.duckdb_store import DuckDBStore
@@ -25,7 +21,7 @@ st.set_page_config(page_title="A股做T分析器", layout="wide")
 st.title("A股做T历史分析器 · v0.2")
 st.caption("量化历史日内交易空间；日线评分使用前复权，做T成本与分钟回测使用真实历史名义价格（不复权）。")
 
-provider_choice = st.sidebar.selectbox("数据源", ["自动降级", "东方财富直连", "AKShare", "离线演示"])
+provider_choice = st.sidebar.selectbox("数据源", ["自动降级", "东方财富直连", "AKShare", "Tushare（需Token）", "离线演示"])
 lookback = st.sidebar.slider("日线回看交易日", 20, 120, 60, 10)
 use_cache = st.sidebar.checkbox("启用 DuckDB 本地缓存", value=True)
 db_path = st.sidebar.text_input("数据库", "market.duckdb", disabled=not use_cache)
@@ -37,36 +33,17 @@ def provider_key() -> str:
         "离线演示": "demo",
         "东方财富直连": "eastmoney",
         "AKShare": "akshare",
+        "Tushare（需Token）": "tushare",
         "自动降级": "auto",
     }[provider_choice]
 
 
 def raw_provider_from_ui():
-    key = provider_key()
-    if key == "demo":
-        return DemoProvider()
-    if key == "eastmoney":
-        return EastmoneyProvider()
-    if key == "akshare":
-        return AkshareProvider()
-    return ProviderChain([EastmoneyProvider(), AkshareProvider()])
+    return make_raw_provider(provider_key())
 
 
 def retry_provider_from_ui():
-    key = provider_key()
-    if key == "demo":
-        return DemoProvider()
-    attempts = retries + 1
-    if key == "eastmoney":
-        return RetryingProvider(EastmoneyProvider(), attempts=attempts)
-    if key == "akshare":
-        return RetryingProvider(AkshareProvider(), attempts=attempts)
-    return ProviderChain(
-        [
-            RetryingProvider(EastmoneyProvider(), attempts=attempts),
-            RetryingProvider(AkshareProvider(), attempts=attempts),
-        ]
-    )
+    return make_provider(provider_key(), retries=retries)
 
 
 def provider_and_store():
