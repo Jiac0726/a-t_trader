@@ -7,7 +7,7 @@ from typing import Any
 import pandas as pd
 import requests
 
-from .base import MarketDataError, MarketDataProvider
+from .base import MarketDataError, MarketDataProvider, NoMarketData
 
 
 class EastmoneyProvider(MarketDataProvider):
@@ -83,7 +83,6 @@ class EastmoneyProvider(MarketDataProvider):
             raise MarketDataError(f"Eastmoney request failed: {exc}") from exc
 
     def stock_list(self) -> pd.DataFrame:
-        # Covers Shanghai, Shenzhen/ChiNext, STAR and Beijing A shares.
         params: dict[str, Any] = {
             "pn": "1",
             "pz": "10000",
@@ -149,7 +148,7 @@ class EastmoneyProvider(MarketDataProvider):
         data = payload.get("data") or {}
         klines = data.get("klines") or []
         if not klines:
-            raise MarketDataError(f"Eastmoney returned no K-line data for {code}")
+            raise NoMarketData(f"Eastmoney returned no K-line data for {code}")
 
         rows = []
         for line in klines:

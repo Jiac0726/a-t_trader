@@ -112,6 +112,54 @@ class DuckDBStore:
             return None, None
         return pd.Timestamp(row[0]), pd.Timestamp(row[1])
 
+    def mark_history_coverage(
+        self,
+        code: str,
+        interval: str,
+        start: date | str | pd.Timestamp,
+        end: date | str | pd.Timestamp,
+    ) -> None:
+        code = str(code).zfill(6)
+        start_ts = pd.Timestamp(start).normalize()
+        end_ts = pd.Timestamp(end).normalize()
+        with self._connect() as con:
+            con.execute(
+                """
+                CREATE TABLE IF NOT EXISTS history_coverage (
+                    code VARCHAR,
+                    interval VARCHAR,
+                    covered_start TIMESTAMP,
+                    covered_end TIMESTAMP,
+                    updated_at TIMESTAMP
+                )
+                """
+            )
+            row = con.execute(
+                "SELECT covered_start, covered_end FROM history_coverage WHERE code = ? AND interval = ?",
+                [code, interval],
+            ).fetchone()
+            if row:
+                start_ts = min(start_ts, pd.Timestamp(row[0]))
+                end_ts = max(end_ts, pd.Timestamp(row[1]))
+                con.execute("DELETE FROM history_coverage WHERE code = ? AND interval = ?", [code, interval])
+            con.execute(
+                "INSERT INTO history_coverage VALUES (?, ?, ?, ?, ?)",
+                [code, interval, start_ts, end_ts, pd.Timestamp.utcnow().tz_localize(None)],
+            )
+
+    def coverage_bounds(self, code: str, interval: str) -> tuple[pd.Timestamp | None, pd.Timestamp | None]:
+        with self._connect() as con:
+            try:
+                row = con.execute(
+                    "SELECT covered_start, covered_end FROM history_coverage WHERE code = ? AND interval = ?",
+                    [str(code).zfill(6), interval],
+                ).fetchone()
+            except Exception:
+                return None, None
+        if not row:
+            return None, None
+        return pd.Timestamp(row[0]), pd.Timestamp(row[1])
+
     def save_scores(self, scores: pd.DataFrame) -> None:
         if scores is None or scores.empty:
             return

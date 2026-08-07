@@ -9,6 +9,10 @@ class MarketDataError(RuntimeError):
     pass
 
 
+class NoMarketData(MarketDataError):
+    """The request was valid but the requested range contained no market rows."""
+
+
 class MarketDataProvider(ABC):
     name = "base"
 

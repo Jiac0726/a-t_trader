@@ -7,7 +7,7 @@ from typing import Callable
 
 import pandas as pd
 
-from .base import MarketDataProvider
+from .base import MarketDataProvider, NoMarketData
 
 
 class RetryingProvider(MarketDataProvider):
@@ -35,6 +35,8 @@ class RetryingProvider(MarketDataProvider):
         for attempt in range(1, self.attempts + 1):
             try:
                 return func(*args, **kwargs)
+            except NoMarketData:
+                raise
             except Exception as exc:  # providers normalize most upstream errors already
                 last_error = exc
                 if attempt >= self.attempts:

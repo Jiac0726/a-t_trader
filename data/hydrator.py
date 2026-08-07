@@ -9,7 +9,7 @@ from typing import Callable
 
 import pandas as pd
 
-from providers.base import MarketDataProvider
+from providers.base import MarketDataProvider, NoMarketData
 from storage.duckdb_store import DuckDBStore
 
 
@@ -71,7 +71,11 @@ def plan_missing_ranges(
     tasks: list[tuple[str, pd.Timestamp, pd.Timestamp]] = []
     for raw_code in codes:
         code = str(raw_code).zfill(6)
-        low, high = store.history_bounds(code, interval)
+        coverage_fn = getattr(store, "coverage_bounds", None)
+        if callable(coverage_fn):
+            low, high = coverage_fn(code, interval)
+        else:
+            low, high = store.history_bounds(code, interval)
         if low is None or high is None:
             tasks.append((code, start_ts, end_ts))
             continue
@@ -101,6 +105,8 @@ def _fetch_task(
             limiter.wait()
             provider = provider_factory()
             return provider.history(code, start.date(), end.date(), interval=interval, adjust=adjust)
+        except NoMarketData:
+            raise
         except Exception as exc:
             last_error = exc
             if attempt >= retries:
@@ -160,10 +166,20 @@ def hydrate_codes(
             try:
                 df = future.result()
                 if df is None or df.empty:
-                    raise ValueError("provider returned empty history")
+                    raise NoMarketData("provider returned empty history")
                 store.save_history(code, interval, df)
+                mark_fn = getattr(store, "mark_history_coverage", None)
+                if callable(mark_fn):
+                    mark_fn(code, interval, left, right)
                 succeeded += 1
                 fetched_rows += len(df)
+            except NoMarketData:
+                mark_fn = getattr(store, "mark_history_coverage", None)
+                if callable(mark_fn):
+                    mark_fn(code, interval, left, right)
+                    succeeded += 1
+                else:
+                    failures.append(HydrationFailure(code, left.date().isoformat(), right.date().isoformat(), "no market data"))
             except Exception as exc:
                 failures.append(
                     HydrationFailure(

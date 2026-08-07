@@ -4,7 +4,7 @@ from datetime import date
 import numpy as np
 import pandas as pd
 
-from .base import MarketDataProvider
+from .base import MarketDataProvider, NoMarketData
 
 
 class DemoProvider(MarketDataProvider):
@@ -57,6 +57,8 @@ class DemoProvider(MarketDataProvider):
             volume = rng.integers(20_000, 500_000, n)
             amount = volume * close
         df = pd.DataFrame({"datetime": idx, "open": open_, "high": high, "low": low, "close": close, "volume": volume, "amount": amount})
+        if df.empty:
+            raise NoMarketData(f"Demo range has no market rows for {code}")
         prev = df["close"].shift(1)
         df["amplitude"] = (df["high"] - df["low"]) / prev * 100
         df["pct_change"] = df["close"].pct_change() * 100

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 import pandas as pd
 
-from .base import MarketDataError, MarketDataProvider
+from .base import MarketDataError, MarketDataProvider, NoMarketData
 
 
 class AkshareProvider(MarketDataProvider):
@@ -77,7 +77,7 @@ class AkshareProvider(MarketDataProvider):
         except Exception as exc:
             raise MarketDataError(f"AKShare request failed for {code}: {exc}") from exc
         if raw is None or raw.empty:
-            raise MarketDataError(f"AKShare returned no data for {code}")
+            raise NoMarketData(f"AKShare returned no data for {code}")
 
         rename = {
             "日期": "datetime",
