@@ -14,6 +14,7 @@ from dataset.builder import (
     attach_minute_labels_from_store,
     build_daily_score_panel,
     minute_coverage_report,
+    select_minute_candidates,
     universe_codes_from_lifecycle,
 )
 from providers.baostock_master import BaostockSecurityMasterProvider
@@ -35,6 +36,7 @@ def main() -> None:
     p.add_argument("--workers", type=int, default=4)
     p.add_argument("--rps", type=float, default=3.0)
     p.add_argument("--with-baostock", action="store_true")
+    p.add_argument("--exact-snapshots", action="store_true", help="用每个评分交易日的BaoStock实际证券快照做精确点时过滤")
     p.add_argument("--output-dir", default="output/dataset")
     args = p.parse_args()
 
@@ -43,6 +45,7 @@ def main() -> None:
     store = DuckDBStore(args.db)
     master = None
     snapshots = None
+    security = None
 
     if args.with_baostock:
         security = CachedSecurityMasterProvider(BaostockSecurityMasterProvider(), DuckDBSecuritySnapshotStore(args.db))
@@ -76,16 +79,26 @@ def main() -> None:
         end=args.end,
         lookback=args.lookback,
         master=master,
-        snapshots=snapshots,
+        snapshots=None,
     )
+
+    if args.exact_snapshots:
+        if security is None:
+            raise SystemExit("--exact-snapshots 需要同时启用 --with-baostock")
+        score_dates = sorted(pd.to_datetime(daily_panel["date"]).dt.normalize().unique()) if not daily_panel.empty else []
+        snapshots = security.snapshot_many(score_dates)
+        # Re-run only the membership filter; score computation remains unchanged.
+        from providers.security_master import filter_panel_by_snapshots
+        daily_panel = filter_panel_by_snapshots(
+            daily_panel, snapshots, include_suspended=False, unknown_dates="drop"
+        )
 
     minute_codes: list[str] = []
     minute_report = None
     if args.minute_limit > 0:
-        # Stage-2 minute hydration is deliberately bounded. Prefer names that
-        # actually produced daily score rows; future versions can replace this
-        # deterministic code order with a persisted daily pre-screen.
-        minute_codes = sorted(daily_panel["code"].unique())[: args.minute_limit] if not daily_panel.empty else []
+        # Stage-2 minute hydration is deliberately bounded and ranked by the
+        # latest daily score, with liquidity as a deterministic tie-breaker.
+        minute_codes = select_minute_candidates(daily_panel, args.minute_limit)
         minute_start = max(pd.Timestamp(args.start), pd.Timestamp(args.end) - pd.Timedelta(days=args.minute_days))
         if minute_codes:
             minute_report = hydrate_codes(
@@ -139,6 +152,8 @@ def main() -> None:
         "minute_coverage_rows": len(coverage),
         "daily_panel_file": daily_panel_file,
         "labeled_panel_file": labeled_panel_file,
+        "universe_filter": "exact_snapshots" if args.exact_snapshots else ("lifecycle" if master is not None else "current_provider"),
+        "snapshot_rows": 0 if snapshots is None else int(len(snapshots)),
     }
     (out_dir / "manifest.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
