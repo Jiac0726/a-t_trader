@@ -134,6 +134,12 @@ def hydrate_codes(
     Fetch workers each create their own provider instance so requests.Session and
     provider-local state are not shared across threads. DuckDB writes stay on the
     caller thread, avoiding concurrent writer conflicts.
+
+    Coverage semantics are intentionally different by granularity: a successful
+    daily request confirms the requested calendar range (including weekends and
+    holidays), while intraday public endpoints are allowed to silently truncate
+    older history, so minute coverage is marked only over timestamps actually
+    returned by the provider.
     """
 
     normalized_codes = list(dict.fromkeys(str(c).zfill(6) for c in codes if str(c).strip()))
@@ -170,12 +176,29 @@ def hydrate_codes(
                 store.save_history(code, interval, df)
                 mark_fn = getattr(store, "mark_history_coverage", None)
                 if callable(mark_fn):
-                    mark_fn(code, interval, left, right)
+                    if interval in {"1d", "day"}:
+                        # Daily providers can legitimately omit weekends/holidays,
+                        # so a successful request confirms the whole calendar range.
+                        covered_left, covered_right = left, right
+                    else:
+                        # Intraday public sources may silently truncate history.
+                        # Never mark an unreturned early range as covered merely
+                        # because a recent slice succeeded.
+                        returned = pd.to_datetime(df["datetime"], errors="coerce").dropna()
+                        if returned.empty:
+                            raise NoMarketData("provider returned no parseable timestamps")
+                        covered_left = pd.Timestamp(returned.min()).normalize()
+                        covered_right = pd.Timestamp(returned.max()).normalize()
+                    mark_fn(code, interval, covered_left, covered_right)
                 succeeded += 1
                 fetched_rows += len(df)
             except NoMarketData:
                 mark_fn = getattr(store, "mark_history_coverage", None)
-                if callable(mark_fn):
+                if callable(mark_fn) and interval in {"1d", "day"}:
+                    # For daily bars, a clean no-data response can safely close
+                    # weekends/holidays/suspension-only ranges. Intraday no-data
+                    # may instead mean provider retention limits, so keep it as
+                    # a visible failure rather than claiming historical coverage.
                     mark_fn(code, interval, left, right)
                     succeeded += 1
                 else:
