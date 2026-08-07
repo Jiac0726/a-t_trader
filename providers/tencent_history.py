@@ -10,13 +10,16 @@ from .base import MarketDataError, MarketDataProvider, NoMarketData
 
 
 class TencentHistoryProvider(MarketDataProvider):
-    """Independent Tencent K-line fallback, including current BSE 920 codes.
+    """Independent Tencent K-line fallback, including BSE code namespaces.
+
+    Current BSE 920 codes and legacy BSE 43/83/87 codes are routed explicitly
+    to the `bj` namespace. Legacy routing exists for historical continuity
+    probes only; old codes are never used to build the current stock universe.
 
     Tencent's K-line payload exposes OHLCV but not a trustworthy historical
     turnover amount field in the same schema. We therefore keep a required
     `amount` column as an explicitly estimated value (volume in lots × 100 ×
-    OHLC mean) and mark the dataframe with `amount_estimated=True`. This source
-    is suitable for continuity/validation and price-path research; liquidity
+    OHLC mean) and mark the dataframe with `amount_estimated=True`. Liquidity
     calibration should prefer a provider with reported historical amount.
     """
 
@@ -40,8 +43,9 @@ class TencentHistoryProvider(MarketDataProvider):
         if raw.startswith(("sh", "sz", "bj")):
             return raw
         code = raw.zfill(6)
-        # 920 must be tested before generic 9x Shanghai routing.
-        if code.startswith("92"):
+        # BSE must be tested before generic routing. The 43/83/87 namespaces
+        # are legacy listed-company codes retained only for historical probes.
+        if code.startswith(("920", "43", "83", "87")):
             return f"bj{code}"
         if code.startswith(("5", "6", "9")):
             return f"sh{code}"
