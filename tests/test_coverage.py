@@ -64,3 +64,32 @@ def test_coverage_prevents_weekend_refetch():
         retries=0,
     )
     assert second.requested_ranges == 0
+
+
+class TruncatedMinuteProvider(DemoProvider):
+    def history(self, code, start, end, interval="1d", adjust="qfq"):
+        if interval == "5m":
+            # Simulate a public provider that accepts a long request but only
+            # returns its recent retention window.
+            start = max(pd.Timestamp(start), pd.Timestamp(end) - pd.Timedelta(days=5))
+        return super().history(code, start, end, interval=interval, adjust=adjust)
+
+
+def test_minute_coverage_only_marks_observed_return_window():
+    store = CoverageStore()
+    report = hydrate_codes(
+        ["300059"],
+        provider_factory=TruncatedMinuteProvider,
+        store=store,
+        start=date(2026, 6, 1),
+        end=date(2026, 8, 7),
+        interval="5m",
+        workers=1,
+        requests_per_second=0,
+        retries=0,
+    )
+    assert report.succeeded_ranges == 1
+    low, high = store.coverage_bounds("300059", "5m")
+    assert low >= pd.Timestamp("2026-08-02")
+    assert high <= pd.Timestamp("2026-08-07")
+    assert low != pd.Timestamp("2026-06-01")
