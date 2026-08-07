@@ -73,24 +73,33 @@ def run_live_validation(
     persistence_probe=None,
     universe_floor=3000,
     require_markets=("SH", "SZ", "BJ"),
+    daily_required_markets=None,
+    daily_warning_markets=(),
     membership_overlap_floor=0.90,
     market_candidate_limit=12,
     end: date | None = None,
 ) -> ValidationReport:
     """Run internet-connected merge-gate checks without mutating research state.
 
-    Explicit representative codes are checked exactly as requested. Market
-    coverage is a separate concern: for any required market not already covered
-    by an explicit representative, the validator probes a bounded sequence of
-    current-universe candidates and records the first one with a usable daily
-    history window. This avoids treating one migrated/security-code edge case as
-    evidence that an entire market's price path is broken.
+    ``require_markets`` controls identity coverage in the current security
+    universe. Daily-price coverage is separated deliberately: by default it is
+    equally strict, but callers may set ``daily_required_markets`` and
+    ``daily_warning_markets`` independently. This lets CI keep BSE identity hard
+    while reporting unavailable long-window BSE public history as a visible WARN
+    when no authorized/local history source is configured.
+
+    Explicit representative codes are always hard checks. Market coverage is a
+    separate concern: for any required/warning market not already covered by an
+    explicit representative, the validator probes a bounded sequence of current
+    universe candidates and records the first usable daily history window.
     """
     end = end or date.today()
     start_daily = end - timedelta(days=45)
     start_intraday = end - timedelta(days=7)
     checks: list[CheckResult] = []
     universe_holder: dict[str, pd.DataFrame] = {}
+    required_daily = tuple(require_markets if daily_required_markets is None else daily_required_markets)
+    warning_daily = tuple(m for m in daily_warning_markets if m not in required_daily)
 
     def universe_check():
         df = market_provider.stock_list()
@@ -138,9 +147,9 @@ def run_live_validation(
         covered_markets = {str(code_to_market.get(code, "")).upper() for code in explicit_codes}
         covered_markets.discard("")
 
-        for market in require_markets:
+        def append_market_daily_probe(market: str, *, warning: bool) -> None:
             if market in covered_markets:
-                continue
+                return
 
             def market_daily_check(market=market):
                 subset = universe[universe["market"] == market]
@@ -171,15 +180,21 @@ def run_live_validation(
                     f"sample_errors={sample}"
                 )
 
-            checks.append(_check(f"daily_market_{market}", market_daily_check))
+            checks.append(_check(f"daily_market_{market}", market_daily_check, warning=warning))
+
+        for market in required_daily:
+            append_market_daily_probe(str(market).upper(), warning=False)
+        for market in warning_daily:
+            append_market_daily_probe(str(market).upper(), warning=True)
 
     first = explicit_codes[0]
 
     def intraday_check():
-        df = validate_ohlcv(market_provider.history(first, start_intraday, end, interval="5m", adjust="qfq"))
+        # T-cost validation must use the historical nominal price level.
+        df = validate_ohlcv(market_provider.history(first, start_intraday, end, interval="5m", adjust="none"))
         if len(df) < 10:
             raise RuntimeError(f"too few 5m rows for {first}: {len(df)}")
-        return f"{first}: {len(df)} 5m rows", {"code": first, "rows": len(df), "provider": df.attrs.get("provider", "")}
+        return f"{first}: {len(df)} 5m rows", {"code": first, "rows": len(df), "provider": df.attrs.get("provider", ""), "adjust": "none"}
 
     checks.append(_check("intraday_5m", intraday_check))
 
