@@ -91,3 +91,61 @@ def test_snapshot_many_reuses_one_session_and_queries_each_unique_trade_date(mon
     assert fake.all_stock_days == ["2026-08-07"]
     assert set(out["code"]) == {"600000", "000001", "300750", "920001"}
     assert fake.logged_out is True
+
+
+class _IterResult:
+    def __init__(self, rows, fields, code: str = "0", msg: str = "success"):
+        self.rows = list(rows)
+        self.fields = list(fields)
+        self.error_code = code
+        self.error_msg = msg
+        self.index = -1
+
+    def next(self):
+        self.index += 1
+        return self.index < len(self.rows)
+
+    def get_row_data(self):
+        return self.rows[self.index]
+
+    def get_data(self):
+        return pd.DataFrame(columns=self.fields)
+
+
+class FakeBaoStockDelayedSnapshot(FakeBaoStock):
+    def query_all_stock(self, day: str):
+        self.all_stock_days.append(day)
+        if day == "2026-08-07":
+            return _IterResult([], ["code", "tradeStatus", "code_name"])
+        return _IterResult(
+            [["sh.600000", "1", "浦发银行"], ["sz.000001", "1", "平安银行"]],
+            ["code", "tradeStatus", "code_name"],
+        )
+
+
+def test_snapshot_falls_back_when_current_trading_day_snapshot_not_published(monkeypatch):
+    fake = FakeBaoStockDelayedSnapshot()
+
+    def query_trade_dates(start_date: str, end_date: str):
+        return _Result(pd.DataFrame({
+            "calendar_date": ["2026-08-06", "2026-08-07"],
+            "is_trading_day": ["1", "1"],
+        }))
+
+    fake.query_trade_dates = query_trade_dates
+    monkeypatch.setattr(BaostockSecurityMasterProvider, "_bs", staticmethod(lambda: fake))
+    out = BaostockSecurityMasterProvider().snapshot("2026-08-07")
+    assert fake.all_stock_days == ["2026-08-07", "2026-08-06"]
+    assert set(out["code"]) == {"600000", "000001"}
+    assert out.attrs["requested_as_of"] == "2026-08-07"
+    assert out.attrs["resolved_trade_date"] == "2026-08-06"
+
+
+def test_baostock_prefers_documented_iterator_protocol():
+    result = _IterResult(
+        [["sh.600000", "1", "浦发银行"]],
+        ["code", "tradeStatus", "code_name"],
+    )
+    out = BaostockSecurityMasterProvider._get_data(result, "query_all_stock")
+    assert len(out) == 1
+    assert out.iloc[0]["code"] == "sh.600000"
