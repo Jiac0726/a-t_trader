@@ -47,6 +47,10 @@ jobs:
     needs: offline-regression
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      # Optional authorized fallback. When this secret is absent the value is
+      # empty and the provider is not added to the auto chain.
+      TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
