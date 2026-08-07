@@ -78,3 +78,14 @@ def test_daily_panel_and_real_minute_coverage_are_separate():
     assert coverage.loc["600519", "rows_5m"] > 0
     assert coverage.loc["600519", "trading_days_5m"] > 0
     assert coverage.loc["000001", "rows_5m"] == 0
+
+
+def test_minute_candidates_use_latest_score_then_liquidity():
+    from dataset.builder import select_minute_candidates
+    panel = pd.DataFrame([
+        {"date": "2026-01-01", "code": "000001", "score": 99, "median_amount": 1},
+        {"date": "2026-01-02", "code": "000001", "score": 60, "median_amount": 100},
+        {"date": "2026-01-02", "code": "600000", "score": 80, "median_amount": 10},
+        {"date": "2026-01-02", "code": "300001", "score": 80, "median_amount": 20},
+    ])
+    assert select_minute_candidates(panel, 2) == ["300001", "600000"]
