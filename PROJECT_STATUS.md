@@ -1,108 +1,126 @@
 # 项目状态
 
-## v0.1 已完成并合入 main
+## 当前结论
 
-- [x] Provider 抽象层
-- [x] 东方财富历史日K/分钟K直连接口适配器
-- [x] AKShare 日K备用适配器
-- [x] 自动降级 ProviderChain
-- [x] 离线 DemoProvider
-- [x] OHLCV 数据质量检查
-- [x] 60日历史特征
-- [x] T Score v0.1
-- [x] 5分钟 ZigZag T机会统计
-- [x] 自选池批量扫描 CLI
-- [x] Streamlit 界面
-- [x] Windows 一键安装/启动脚本
-- [x] pytest 自动测试
+`a-t_trader` 已经完成最初目标：**能够对自选股或市场候选做历史适合度分析，并通过 Streamlit 直接给出“做T候选榜 → 原因 → 风险 → 单股详情 → 正T/倒T回测”。**
 
-## v0.2 数据层与全市场扫描
+当前开发分支：
 
-- [x] 全A股股票池 Provider 接口
-- [x] 东方财富全A股股票池直连实现
-- [x] AKShare 股票池备用源
-- [x] ProviderChain 股票池自动降级
-- [x] DuckDB 股票池/K线缓存结构
-- [x] CachedProvider 缺失日期增量补取
-- [x] `--all` / `--limit` 全市场模式
-- [x] ST / 当前成交额预筛
-- [x] 有上限的并发日K首次灌库
-- [x] 聚合请求速率限制与指数退避
-- [x] 数据源健康检查
-- [x] 股票池异常小结果保护
-- [x] 周末/节假日缓存覆盖区间元数据
+```text
+dev/v0.2-market-scanner
+```
 
-## v0.2 做T研究层
+PR：#2，仍保持 Draft。原因不是基础工具不可用，而是 **T Score v0.2 正式权重尚未通过真实多股票 OOS 晋级门槛**。
 
-- [x] 5分钟数据按需缓存
-- [x] 正T/倒T成本模型（佣金、最低佣金、卖出印花税、额外费率、滑点、T+1底仓约束）
-- [x] 历史最佳单次T空间（后视机会天花板，明确非策略）
-- [x] 因果滚动Z分数均值回归基线
-- [x] 历史最佳T空间从 O(n²) 优化为成本精确的 O(n) 算法
-- [x] 5分钟日内最高/最低点时间分布
-- [x] 独立回测 CLI + Streamlit 研究页面
+## 产品主线：已完成
 
-## v0.2 T Score 校准层
+- [x] 自选池做T候选榜
+- [x] 全市场候选粗筛
+- [x] T Score 0–100 排名
+- [x] 适合度 / 风险 / “为什么”解释层
+- [x] 单股日线评分与趋势查看
+- [x] 5分钟历史T机会分析
+- [x] 正T / 倒T成本回测
+- [x] T+1底仓约束
+- [x] 佣金 / 最低佣金 / 印花税 / 滑点配置
+- [x] CSV候选榜导出
+- [x] Streamlit 主界面产品化
+- [x] Windows 一键启动脚本
 
-- [x] 历史 T Score 快照严格只用当时及以前数据
-- [x] 未来机会标签从下一交易日起算，同日机会排除
-- [x] expanding walk-forward + gap 防泄漏切分
-- [x] 固定 v0.1 OOS Rank IC / 分位桶诊断
-- [x] 训练折内部时间顺序验证
-- [x] 非负、和为1、单项权重上限的确定性 simplex 候选搜索
-- [x] 外层未来折比较：优化 / v0.1 / 振幅 / 流动性 / 日内空间
-- [x] 每折随机零假设分布、百分位和经验 p 值
-- [x] 权重跨折稳定性报告
-- [x] 自动“晋级新权重”门槛；未通过时禁止替换 v0.1
-- [x] 防泄漏、可复现、优化器合成信号自动测试
-- [x] 多股票“日期 × 股票”横截面面板
-- [x] 逐日横截面 Rank IC / 分位组 / Top-Bottom 差值
-- [x] 横截面训练折权重优化 + 外层未来日期 OOS
-- [x] 横截面随机零假设与专属晋级门槛
-- [x] 横截面候选搜索 NumPy 快速内核
-- [x] 独立 SecurityMasterProvider 接口
-- [x] BaoStock 可选点时证券主表：query_all_stock / query_stock_basic / query_trade_dates
-- [x] 历史交易日快照批量读取与 DuckDB 快照缓存
-- [x] 横截面 CLI exact-snapshot / lifecycle 两级过滤
-- [x] 未来 IPO、退市后、停牌、指数/ETF/B股过滤回归测试
-- [x] causal trailing 市场状态分类：trend_up / trend_down / range / high_vol
-- [x] 高波动“历史分位 + 绝对波动下限”双阈值
-- [x] 市场状态防未来数据污染测试
-- [x] 横截面按市场状态拆分 IC / Top-Bottom 诊断
-- [x] 显式宽基指数/ETF参考资产 Provider（不再按六码猜证券类型）
-- [x] 中证指数 Eastmoney 多 secid 候选与实际命中记录
-- [x] Demo 宽基/ETF离线 Provider，避免 demo 模式误走公网
-- [x] 联网合并前验收器：沪深北市场覆盖、日K/5分钟、指数、ETF、点时名单重合、DuckDB临时读写
-- [x] 联网验收 JSON 报告与独立研究文档
+## 数据层：已完成
 
-## 当前验证
+- [x] 多 Provider 行情架构
+- [x] Eastmoney
+- [x] AKShare 备用
+- [x] Tencent 历史K备用
+- [x] BaoStock 沪深历史 / 证券快照能力
+- [x] 可选 Tushare Token 源
+- [x] 证券身份与价格数据解耦
+- [x] 沪深北当前股票池
+- [x] DuckDB K线缓存
+- [x] DuckDB 点时证券快照缓存
+- [x] 并发历史灌库 + 总RPS限速 + 重试退避
+- [x] `code + interval + adjust + datetime` 复权感知缓存键
+- [x] qfq复权尺度变化检测与缓存重建
+- [x] 5分钟缓存只记录实际返回覆盖区间
+- [x] 数据来源 / amount质量 / source_code 血缘持久化
 
-- pytest：65/65 通过
-- Python compileall：通过
-- Demo 全市场扫描：通过
-- 500天 Demo 固定校准：约 1.3 秒（当前容器）
-- 500天 Demo 权重优化：128候选 + 100次/折随机零假设约 8 秒（当前容器）
-- 模拟数据上当前优化权重未通过晋级门槛，这是有效诊断结果，不会强制宣称优化成功
+## 研究层：已完成框架
 
-## 当前环境限制
+- [x] Walk-forward + gap 防未来泄漏
+- [x] 单股 OOS Rank IC
+- [x] 多股票横截面 Rank IC
+- [x] 分位组 / Top-Bottom
+- [x] 随机零假设
+- [x] 权重约束搜索
+- [x] 市场状态 `trend_up / trend_down / range / high_vol`
+- [x] 点时股票池 / 生命周期过滤
+- [x] 数据集质量门禁
+- [x] `oos_eligible_panel`
+- [x] 正式 OOS CLI 默认 fail-closed
+- [x] 权重晋级门槛
 
-当前构建环境无法稳定完成真实公开行情接口与真实 DuckDB 驱动回归，因此 PR 继续保持 Draft。缓存、并发、回测、校准控制逻辑均已有离线测试；上线或合并 v0.2 前仍必须在联网开发机上完成真实沪深北股票池、历史日K/5分钟K、DuckDB 持久化的端到端回归。
+**尚未完成：真实 T Score v0.2 权重晋级。** 当前不会拿 Demo / 合成数据结果冒充正式权重。
 
-## 下一阶段
+## 最新自动验证
 
-- [ ] 在联网开发机执行 `app.live_validate_cli`，真实东财/AKShare股票池回归并校验沪深北数量
-- [ ] DuckDB 真机回归与 schema migration（验收器已提供临时库读写探针）
-- [x] 多股票横截面 OOS 校准框架（真实市场验证仍待完成）
-- [x] 点时（point-in-time）历史股票池框架：BaoStock历史快照 + 生命周期 fallback + DuckDB 快照缓存（真实覆盖仍待真机回归）
-- [x] 市场状态分层诊断框架 + 显式宽基指数/ETF数据路径（真实联网 OOS 验证仍待完成）
-- [ ] 只有真实多股票 OOS 晋级门槛通过后，才生成 T Score v0.2 正式权重
+GitHub Actions `run #107`：**成功**。
 
-## v0.2 Stage 11
+离线回归：
 
-- [x] 显式宽基指数/ETF Provider
-- [x] 中证指数多 secid 候选 + 东财直连 / AKShare fallback
-- [x] Demo 宽基/ETF 完全离线验证路径
-- [x] 市场状态 CLI 默认使用显式 reference asset key
-- [x] 联网 live validation suite：SH/SZ/BJ + 日K/5分钟 + 指数/ETF + 点时名单重合 + 临时 DuckDB
-- [x] JSON 验收报告与非零失败退出码
-- [x] pytest：65/65 通过
+```text
+127 passed
+compileall passed
+```
+
+真实联网验收：
+
+```text
+market universe: 5538
+SZ: 2894
+SH: 2311
+BJ: 333
+```
+
+已真实通过：
+
+- [x] 600519 日K
+- [x] 000001 日K
+- [x] 300750 日K
+- [x] 600519 5分钟 raw：288 rows
+- [x] 沪深300
+- [x] 沪深300ETF
+- [x] BaoStock 点时快照：5205 rows
+- [x] 沪深点时成员重合：100%
+- [x] DuckDB K线读写
+- [x] DuckDB 证券快照读写
+
+## 当前明确限制
+
+以下问题仍保留为 WARN，不会伪装成已完成：
+
+1. **北交所长窗口历史日K**：GitHub Hosted Runner 上免费源仍不稳定。
+2. **北交所点时成员交叉验证**：BaoStock历史快照当前不覆盖 BJ。
+3. **北交所迁码历史连续性**：2025-10-09 前后旧码→920新码的真实连续价格源尚未完成生产验证。
+
+因此：
+
+- 当前沪深候选榜、自选池、单股分析、正T/倒T回测可以继续作为产品主线使用。
+- 正式全市场历史 OOS 若涉及北交所，必须继续 fail-closed，或配置经过验证的 Tushare / 本地 TDX 等来源。
+
+## 接下来只做产品价值
+
+不再继续无边界扩底层模块。下一批开发只优先以下内容：
+
+1. 候选榜交互优化：筛选 / 排序 / 点击进入单股。
+2. 保存每日候选榜，支持“今天 vs 昨天”变化。
+3. 候选股分钟深挖只对 Top N 下载，控制速度和接口压力。
+4. 用真实历史多股票数据跑正式 OOS；只有晋级门槛通过才生成 T Score v0.2。
+
+## 不做的事
+
+- 不因为某个指标看起来专业就继续堆指标。
+- 不把后视最佳T空间当成可执行策略。
+- 不用 qfq 分钟价格计算真实交易成本。
+- 不把未知 / 估算 / 未验证血缘样本偷偷放入正式 OOS。
+- 不因为离线测试全绿就宣称策略有收益能力。
