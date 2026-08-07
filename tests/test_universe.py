@@ -29,3 +29,10 @@ def test_nested_provider_chain_preserves_leaf_provider_attr():
     outer = ProviderChain([inner])
     df = outer.history("600000", date(2026, 1, 1), date(2026, 1, 2))
     assert df.attrs["provider"] == "leaf"
+
+
+def test_auto_provider_includes_official_exchange_identity_fallback():
+    from app.cli import make_provider
+    provider = make_provider("auto", retries=0)
+    names = [getattr(x, "name", type(x).__name__) for x in provider.providers]
+    assert names[-1] == "official-exchange-universe"
