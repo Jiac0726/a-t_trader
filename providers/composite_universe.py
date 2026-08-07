@@ -18,6 +18,7 @@ class BaostockBseUniverseProvider(MarketDataProvider):
     """
 
     name = "baostock-bse-universe"
+    _NATIVE_920_START = pd.Timestamp("2024-04-22")
 
     def __init__(self, security_master, bse_provider: OfficialExchangeUniverseProvider | None = None, as_of=None):
         self.security_master = security_master
@@ -42,16 +43,26 @@ class BaostockBseUniverseProvider(MarketDataProvider):
             raise MarketDataError("BSE official current stock list is empty")
         out = pd.concat([shsz, bse], ignore_index=True)
         out["code"] = out["code"].astype(str).str.zfill(6)
+        out["listing_date"] = pd.to_datetime(out.get("listing_date"), errors="coerce")
         out = out.drop_duplicates(["market", "code"], keep="last")
         markets = set(out["market"])
         if markets != {"SH", "SZ", "BJ"}:
             raise MarketDataError(f"Composite universe missing markets: {sorted({'SH','SZ','BJ'} - markets)}")
         if len(out) < 3000:
             raise MarketDataError(f"Composite A-share universe suspiciously small: {len(out)}")
-        # Representative/live smoke tests should prefer the current 920 BSE
-        # namespace instead of legacy migrated codes that third-party quote
-        # services may keep as stale aliases.
-        out["_priority"] = ((out["market"] == "BJ") & out["code"].str.startswith("92")).astype(int)
+
+        # BSE switched legacy listings into the 920 namespace later. Public
+        # history services may expose only post-switch bars under the new code,
+        # while companies that originally listed with 920 have continuous 920
+        # history. Live smoke tests therefore prefer native-920 companies; this
+        # is only sampling priority, not a claim that migrated history is solved.
+        native_920 = (
+            (out["market"] == "BJ")
+            & out["code"].str.startswith("92")
+            & out["listing_date"].ge(self._NATIVE_920_START)
+        )
+        current_920 = (out["market"] == "BJ") & out["code"].str.startswith("92")
+        out["_priority"] = native_920.astype(int) * 2 + current_920.astype(int)
         out = out.sort_values(["market", "_priority", "code"], ascending=[True, False, True]).drop(columns="_priority").reset_index(drop=True)
         out.attrs["provider"] = self.name
         out.attrs["snapshot_as_of"] = snapshot.attrs.get("resolved_trade_date", str(requested.date()))
