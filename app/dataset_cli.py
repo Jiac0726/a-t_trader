@@ -22,9 +22,13 @@ from storage.duckdb_store import DuckDBStore
 from storage.security_snapshot_store import DuckDBSecuritySnapshotStore
 
 
+DAILY_ADJUST = "qfq"
+MINUTE_LABEL_ADJUST = "none"
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description="构建可断点续跑的A股历史横截面研究数据集")
-    p.add_argument("--provider", choices=["auto", "eastmoney", "akshare", "demo"], default="auto")
+    p.add_argument("--provider", choices=["auto", "eastmoney", "akshare", "tushare", "demo"], default="auto")
     p.add_argument("--db", default="market.duckdb")
     p.add_argument("--start", required=True)
     p.add_argument("--end", required=True)
@@ -68,6 +72,7 @@ def main() -> None:
         args.start,
         args.end,
         interval="1d",
+        adjust=DAILY_ADJUST,
         workers=args.workers,
         requests_per_second=args.rps,
     )
@@ -78,6 +83,7 @@ def main() -> None:
         start=args.start,
         end=args.end,
         lookback=args.lookback,
+        adjust=DAILY_ADJUST,
         master=master,
         snapshots=None,
     )
@@ -87,7 +93,6 @@ def main() -> None:
             raise SystemExit("--exact-snapshots 需要同时启用 --with-baostock")
         score_dates = sorted(pd.to_datetime(daily_panel["date"]).dt.normalize().unique()) if not daily_panel.empty else []
         snapshots = security.snapshot_many(score_dates)
-        # Re-run only the membership filter; score computation remains unchanged.
         from providers.security_master import filter_panel_by_snapshots
         daily_panel = filter_panel_by_snapshots(
             daily_panel, snapshots, include_suspended=False, unknown_dates="drop"
@@ -96,8 +101,6 @@ def main() -> None:
     minute_codes: list[str] = []
     minute_report = None
     if args.minute_limit > 0:
-        # Stage-2 minute hydration is deliberately bounded and ranked by the
-        # latest daily score, with liquidity as a deterministic tie-breaker.
         minute_codes = select_minute_candidates(daily_panel, args.minute_limit)
         minute_start = max(pd.Timestamp(args.start), pd.Timestamp(args.end) - pd.Timedelta(days=args.minute_days))
         if minute_codes:
@@ -108,6 +111,7 @@ def main() -> None:
                 minute_start,
                 args.end,
                 interval="5m",
+                adjust=MINUTE_LABEL_ADJUST,
                 workers=max(1, min(args.workers, 4)),
                 requests_per_second=min(args.rps, 2.0),
             )
@@ -119,8 +123,9 @@ def main() -> None:
         store,
         codes=minute_codes,
         horizon=args.horizon,
+        adjust=MINUTE_LABEL_ADJUST,
     )
-    coverage = minute_coverage_report(minute_codes, store)
+    coverage = minute_coverage_report(minute_codes, store, adjust=MINUTE_LABEL_ADJUST)
 
     def write_panel(frame: pd.DataFrame, stem: str) -> str:
         parquet = out_dir / f"{stem}.parquet"
@@ -145,6 +150,19 @@ def main() -> None:
         labeled_rows=int(labeled["forward_opportunity_pct"].notna().sum()) if not labeled.empty and "forward_opportunity_pct" in labeled.columns else 0,
         failures=failures,
     )
+
+    lineage = {
+        "daily_adjust": DAILY_ADJUST,
+        "minute_label_adjust": MINUTE_LABEL_ADJUST,
+        "daily_provider_values": sorted(daily_panel["lineage_providers"].dropna().astype(str).unique().tolist()) if not daily_panel.empty and "lineage_providers" in daily_panel.columns else [],
+        "daily_amount_quality_values": sorted(daily_panel["lineage_amount_quality"].dropna().astype(str).unique().tolist()) if not daily_panel.empty and "lineage_amount_quality" in daily_panel.columns else [],
+        "daily_rows_with_estimated_amount": int(daily_panel["lineage_has_estimated_amount"].fillna(False).astype(bool).sum()) if not daily_panel.empty and "lineage_has_estimated_amount" in daily_panel.columns else 0,
+        "daily_rows_with_unknown_lineage": int(daily_panel["lineage_has_unknown"].fillna(False).astype(bool).sum()) if not daily_panel.empty and "lineage_has_unknown" in daily_panel.columns else 0,
+        "daily_rows_with_bse_stitching": int(daily_panel["lineage_bse_stitched"].fillna(False).astype(bool).sum()) if not daily_panel.empty and "lineage_bse_stitched" in daily_panel.columns else 0,
+        "minute_provider_values": sorted(coverage["providers"].dropna().astype(str).unique().tolist()) if not coverage.empty and "providers" in coverage.columns else [],
+        "minute_amount_quality_values": sorted(coverage["amount_quality"].dropna().astype(str).unique().tolist()) if not coverage.empty and "amount_quality" in coverage.columns else [],
+    }
+
     payload = {
         "build": build.to_dict(),
         "daily_hydration": daily_report.to_dict(),
@@ -154,6 +172,7 @@ def main() -> None:
         "labeled_panel_file": labeled_panel_file,
         "universe_filter": "exact_snapshots" if args.exact_snapshots else ("lifecycle" if master is not None else "current_provider"),
         "snapshot_rows": 0 if snapshots is None else int(len(snapshots)),
+        "lineage": lineage,
     }
     (out_dir / "manifest.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
