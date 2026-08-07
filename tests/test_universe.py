@@ -31,8 +31,9 @@ def test_nested_provider_chain_preserves_leaf_provider_attr():
     assert df.attrs["provider"] == "leaf"
 
 
-def test_auto_provider_includes_official_exchange_identity_fallback():
+def test_auto_provider_keeps_tencent_price_and_official_identity_fallbacks():
     from app.cli import make_provider
     provider = make_provider("auto", retries=0)
     names = [getattr(x, "name", type(x).__name__) for x in provider.providers]
+    assert "retrying:tencent-history" in names
     assert names[-1] == "official-exchange-universe"
