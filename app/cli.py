@@ -14,12 +14,18 @@ from providers.health import check_provider_health
 from providers.official_universe import OfficialExchangeUniverseProvider
 from providers.retrying import RetryingProvider
 from providers.tencent_history import TencentHistoryProvider
+from providers.tushare_history import TushareHistoryProvider
 from scanner.market_scanner import scan_codes, select_universe
 from storage.duckdb_store import DuckDBStore
 
 
 def read_codes(path: str) -> list[str]:
     return [x.strip() for x in Path(path).read_text(encoding="utf-8").splitlines() if x.strip() and not x.startswith("#")]
+
+
+def _optional_tushare():
+    provider = TushareHistoryProvider()
+    return provider if provider.available else None
 
 
 def make_raw_provider(name: str):
@@ -29,11 +35,17 @@ def make_raw_provider(name: str):
         return EastmoneyProvider()
     if name == "akshare":
         return AkshareProvider()
+    if name == "tushare":
+        return TushareHistoryProvider()
     if name == "auto":
         # This factory is used by concurrent history hydration, so keep only
-        # price-capable providers here. Tencent is an independent fallback and
-        # is especially important for current BSE 920xxx symbols.
-        return ProviderChain([EastmoneyProvider(), AkshareProvider(), TencentHistoryProvider()])
+        # price-capable providers here. Token-gated Tushare is appended only
+        # when explicitly configured in the environment.
+        providers = [EastmoneyProvider(), AkshareProvider(), TencentHistoryProvider()]
+        tushare = _optional_tushare()
+        if tushare is not None:
+            providers.append(tushare)
+        return ProviderChain(providers)
     raise ValueError(name)
 
 
@@ -45,25 +57,29 @@ def make_provider(name: str, retries: int = 2):
         return RetryingProvider(EastmoneyProvider(), attempts=attempts)
     if name == "akshare":
         return RetryingProvider(AkshareProvider(), attempts=attempts)
+    if name == "tushare":
+        return RetryingProvider(TushareHistoryProvider(), attempts=attempts)
     if name == "auto":
-        return ProviderChain(
-            [
-                RetryingProvider(EastmoneyProvider(), attempts=attempts),
-                RetryingProvider(AkshareProvider(), attempts=attempts),
-                RetryingProvider(TencentHistoryProvider(), attempts=attempts),
-                # Security identity remains independent from K-line sources.
-                # This official provider is the final no-token current-list
-                # fallback when quote endpoints are unavailable.
-                OfficialExchangeUniverseProvider(),
-            ]
-        )
+        providers = [
+            RetryingProvider(EastmoneyProvider(), attempts=attempts),
+            RetryingProvider(AkshareProvider(), attempts=attempts),
+            RetryingProvider(TencentHistoryProvider(), attempts=attempts),
+        ]
+        tushare = _optional_tushare()
+        if tushare is not None:
+            providers.append(RetryingProvider(tushare, attempts=attempts))
+        # Security identity remains independent from K-line sources. This
+        # official provider is the final no-token current-list fallback when
+        # quote endpoints are unavailable.
+        providers.append(OfficialExchangeUniverseProvider())
+        return ProviderChain(providers)
     raise ValueError(name)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="A股做T历史适合度扫描器")
     parser.add_argument("--watchlist", default="config/watchlist.txt")
-    parser.add_argument("--provider", choices=["auto", "eastmoney", "akshare", "demo"], default="auto")
+    parser.add_argument("--provider", choices=["auto", "eastmoney", "akshare", "tushare", "demo"], default="auto")
     parser.add_argument("--lookback", type=int, default=60)
     parser.add_argument("--calendar-days", type=int, default=140)
     parser.add_argument("--output", default="output/t_scores.csv")
