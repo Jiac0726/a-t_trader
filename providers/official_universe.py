@@ -229,9 +229,18 @@ class OfficialExchangeUniverseProvider(MarketDataProvider):
             raise MarketDataError(f"BSE official universe suspiciously small: {len(out)}")
         return out
 
+    def sse_stock_list(self) -> pd.DataFrame:
+        return self._sse()
+
+    def szse_stock_list(self) -> pd.DataFrame:
+        return self._szse()
+
+    def bse_stock_list(self) -> pd.DataFrame:
+        return self._bse()
+
     def stock_list(self) -> pd.DataFrame:
         try:
-            parts = [self._sse(), self._szse(), self._bse()]
+            parts = [self.sse_stock_list(), self.szse_stock_list(), self.bse_stock_list()]
         except Exception as exc:
             if isinstance(exc, MarketDataError):
                 raise
