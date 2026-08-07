@@ -20,7 +20,7 @@ class ProviderChain(MarketDataProvider):
         for provider in self.providers:
             try:
                 df = provider.history(code, start, end, interval=interval, adjust=adjust)
-                df.attrs["provider"] = provider.name
+                df.attrs.setdefault("provider", provider.name)
                 return df
             except NoMarketData as exc:
                 no_data_errors.append(f"{provider.name}: {exc}")
