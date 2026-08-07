@@ -14,6 +14,7 @@ from providers.baostock_daily import BaostockHistoryProvider
 from providers.composite_universe import BaostockBseUniverseProvider
 from providers.chain import ProviderChain
 from providers.retrying import RetryingProvider
+from providers.tencent_history import TencentHistoryProvider
 from providers.benchmark import ETFS, BENCHMARKS, BaostockBenchmarkProvider, BenchmarkProviderChain, make_benchmark_provider
 from storage.duckdb_store import DuckDBStore
 from storage.security_snapshot_store import DuckDBSecuritySnapshotStore
@@ -94,21 +95,20 @@ def main() -> None:
     reference = make_benchmark_provider(args.benchmark_provider)
     master = None
     if args.with_baostock:
-        # Split failure domains deliberately:
-        # - BaoStock is the proven first choice for SH/SZ history and snapshots.
-        # - current identity comes from BaoStock SH/SZ + the BSE official list.
-        # - the normal market chain stays available for price fallbacks, including
-        #   the independent Tencent 920xxx path for BSE history.
+        # Separate identity from price and separate the SH/SZ and BSE failure
+        # domains. BaoStock is first for SH/SZ bars, Tencent is directly second
+        # for current BSE 920xxx bars, and the composite universe supplies
+        # BaoStock SH/SZ identity + BSE official identity. The generic public
+        # chain remains a final fallback rather than delaying every BSE probe.
         raw = BaostockSecurityMasterProvider()
         master = CachedSecurityMasterProvider(raw, DuckDBSecuritySnapshotStore(args.db))
         universe = BaostockBseUniverseProvider(master)
         market = ProviderChain([
             RetryingProvider(BaostockHistoryProvider(), attempts=2),
+            RetryingProvider(TencentHistoryProvider(), attempts=2),
             universe,
             market,
         ])
-        # Avoid wasting the live gate on blocked public quote hosts when the
-        # independent BaoStock reference path has already proved reachable.
         reference = BenchmarkProviderChain([BaostockBenchmarkProvider(), reference])
     report = run_live_validation(
         market,
