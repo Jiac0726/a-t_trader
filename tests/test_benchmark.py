@@ -109,3 +109,23 @@ def test_akshare_reference_dispatches_etf_without_real_dependency():
     out = provider.history("csi300_etf_sh", "20260101", "20260103")
     assert out.attrs["kind"] == "etf"
     assert len(out) == 1
+
+
+class FakeBaoHistory:
+    def _query_source_code(self, source_code, start, end, interval="1d", adjust="qfq"):
+        return pd.DataFrame({
+            "datetime": pd.date_range("2026-01-01", periods=5, freq="D"),
+            "open": [1,2,3,4,5], "high": [2,3,4,5,6], "low": [1,1,2,3,4],
+            "close": [2,2,3,4,5], "volume": [1]*5, "amount": [1]*5,
+        })
+
+
+def test_baostock_reference_uses_explicit_index_and_etf_codes():
+    from providers.benchmark import BaostockBenchmarkProvider
+    provider = BaostockBenchmarkProvider(FakeBaoHistory())
+    index = provider.history("csi300", "2026-01-01", "2026-01-10")
+    etf = provider.history("csi300_etf_sh", "2026-01-01", "2026-01-10")
+    assert index.attrs["baostock_code"] == "sh.000300"
+    assert index.attrs["kind"] == "index"
+    assert etf.attrs["baostock_code"] == "sh.510300"
+    assert etf.attrs["kind"] == "etf"
