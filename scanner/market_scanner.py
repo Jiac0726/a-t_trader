@@ -73,7 +73,9 @@ def select_universe(
         return pd.DataFrame()
     if exclude_st and "name" in stocks.columns:
         stocks = stocks[~stocks["name"].astype(str).str.upper().str.contains("ST")]
-    if min_spot_amount > 0 and "amount" in stocks.columns:
+    if min_spot_amount > 0:
+        if "amount" not in stocks.columns:
+            raise ValueError("min_spot_amount requires a universe provider with real-time amount data")
         amount = pd.to_numeric(stocks["amount"], errors="coerce").fillna(0)
         stocks = stocks[amount >= min_spot_amount]
     if "amount" in stocks.columns:
