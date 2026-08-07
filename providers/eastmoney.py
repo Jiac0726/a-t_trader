@@ -45,6 +45,11 @@ class EastmoneyProvider(MarketDataProvider):
     @staticmethod
     def _secid(code: str) -> str:
         code = str(code).zfill(6)
+        # Eastmoney's A-share historical endpoint uses market-code 1 for
+        # Shanghai securities and 0 for Shenzhen/Beijing. BSE 920xxx must be
+        # handled before the generic 9xxxxx Shanghai branch.
+        if code.startswith(("4", "8", "92")):
+            return f"0.{code}"
         if code.startswith(("5", "6", "9")):
             return f"1.{code}"
         return f"0.{code}"
