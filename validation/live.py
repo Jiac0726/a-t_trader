@@ -74,13 +74,17 @@ def run_live_validation(
     universe_floor=3000,
     require_markets=("SH", "SZ", "BJ"),
     membership_overlap_floor=0.90,
+    market_candidate_limit=12,
     end: date | None = None,
 ) -> ValidationReport:
     """Run internet-connected merge-gate checks without mutating research state.
 
-    The function is dependency-injected so all control flow remains unit-testable
-    offline. Real endpoint coverage is only claimed when this runner is executed
-    on a connected machine and the generated JSON report is preserved.
+    Explicit representative codes are checked exactly as requested. Market
+    coverage is a separate concern: for any required market not already covered
+    by an explicit representative, the validator probes a bounded sequence of
+    current-universe candidates and records the first one with a usable daily
+    history window. This avoids treating one migrated/security-code edge case as
+    evidence that an entire market's price path is broken.
     """
     end = end or date.today()
     start_daily = end - timedelta(days=45)
@@ -96,38 +100,80 @@ def run_live_validation(
             raise RuntimeError(f"universe too small: {len(df)} < {universe_floor}")
         if not {"code", "name", "market"}.issubset(df.columns):
             raise RuntimeError("universe missing code/name/market")
+        df = df.copy()
+        df["code"] = df["code"].astype(str).str.zfill(6)
+        df["market"] = df["market"].astype(str).str.upper().str.strip()
         counts = {str(k).upper(): int(v) for k, v in df["market"].value_counts().to_dict().items()}
         missing = [market for market in require_markets if counts.get(market, 0) <= 0]
         if missing:
             raise RuntimeError(f"missing required markets {missing}: {counts}")
-        universe_holder["df"] = df.copy()
+        universe_holder["df"] = df
         return f"{len(df)} securities; markets={counts}", {"rows": len(df), "markets": counts}
 
     checks.append(_check("market_universe", universe_check))
 
-    codes = list(dict.fromkeys(str(x).zfill(6) for x in representative_codes))
-    universe = universe_holder.get("df")
-    if universe is not None and not universe.empty:
-        for market in require_markets:
-            subset = universe[universe["market"].astype(str).str.upper() == market]
-            if not subset.empty:
-                code = str(subset.iloc[0]["code"]).zfill(6)
-                if code not in codes:
-                    codes.append(code)
+    explicit_codes = list(dict.fromkeys(str(x).zfill(6) for x in representative_codes))
 
-    for code in codes:
+    def load_daily(code: str):
+        df = market_provider.history(code, start_daily, end, interval="1d", adjust="qfq")
+        clean = validate_ohlcv(df)
+        if len(clean) < 5:
+            raise RuntimeError(f"too few daily rows for {code}: {len(clean)}")
+        return clean, df.attrs.get("provider", clean.attrs.get("provider", ""))
+
+    for code in explicit_codes:
         def daily_check(code=code):
-            df = validate_ohlcv(market_provider.history(code, start_daily, end, interval="1d", adjust="qfq"))
-            if len(df) < 5:
-                raise RuntimeError(f"too few daily rows for {code}: {len(df)}")
+            df, provider_name = load_daily(code)
             return (
                 f"{code}: {len(df)} daily rows through {df['datetime'].max()}",
-                {"code": code, "rows": len(df), "provider": df.attrs.get("provider", "")},
+                {"code": code, "rows": len(df), "provider": provider_name, "selection": "explicit"},
             )
 
         checks.append(_check(f"daily_{code}", daily_check))
 
-    first = codes[0]
+    universe = universe_holder.get("df")
+    covered_markets: set[str] = set()
+    if universe is not None and not universe.empty:
+        code_to_market = universe.drop_duplicates("code").set_index("code")["market"].to_dict()
+        covered_markets = {str(code_to_market.get(code, "")).upper() for code in explicit_codes}
+        covered_markets.discard("")
+
+        for market in require_markets:
+            if market in covered_markets:
+                continue
+
+            def market_daily_check(market=market):
+                subset = universe[universe["market"] == market]
+                if subset.empty:
+                    raise RuntimeError(f"no {market} candidates in current universe")
+                attempts: list[str] = []
+                for code in subset["code"].astype(str).str.zfill(6).head(max(1, int(market_candidate_limit))):
+                    if code in explicit_codes:
+                        continue
+                    try:
+                        df, provider_name = load_daily(code)
+                        return (
+                            f"{market} representative {code}: {len(df)} daily rows through {df['datetime'].max()}",
+                            {
+                                "market": market,
+                                "code": code,
+                                "rows": len(df),
+                                "provider": provider_name,
+                                "selection": "first_usable_current_universe_candidate",
+                                "attempted_before_success": attempts,
+                            },
+                        )
+                    except Exception as exc:
+                        attempts.append(f"{code}: {exc}")
+                sample = attempts[:5]
+                raise RuntimeError(
+                    f"no usable {market} daily representative among first {market_candidate_limit} candidates; "
+                    f"sample_errors={sample}"
+                )
+
+            checks.append(_check(f"daily_market_{market}", market_daily_check))
+
+    first = explicit_codes[0]
 
     def intraday_check():
         df = validate_ohlcv(market_provider.history(first, start_intraday, end, interval="5m", adjust="qfq"))
