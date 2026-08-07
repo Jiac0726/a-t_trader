@@ -13,7 +13,7 @@ from storage.duckdb_store import DuckDBStore
 def main() -> None:
     parser = argparse.ArgumentParser(description="A股5分钟做T回测实验室")
     parser.add_argument("code")
-    parser.add_argument("--provider", choices=["auto", "eastmoney", "akshare", "demo"], default="auto")
+    parser.add_argument("--provider", choices=["auto", "eastmoney", "akshare", "tushare", "demo"], default="auto")
     parser.add_argument("--days", type=int, default=60)
     parser.add_argument("--mode", choices=["positive", "reverse"], default="positive")
     parser.add_argument("--bottom-shares", type=int, default=1000)
@@ -32,7 +32,13 @@ def main() -> None:
     end = date.today()
     raw = make_provider(args.provider)
     provider = raw if args.no_cache else CachedProvider(raw, DuckDBStore(args.db))
-    bars = validate_ohlcv(provider.history(args.code, end - timedelta(days=args.days), end, interval="5m", adjust="qfq"))
+
+    # Cost-aware backtests must use historical nominal traded prices. QFQ can
+    # change the old price level and therefore distort minimum-commission and
+    # fixed-share notional thresholds even when percentage moves are unchanged.
+    bars = validate_ohlcv(
+        provider.history(args.code, end - timedelta(days=args.days), end, interval="5m", adjust="none")
+    )
     costs = CostModel(
         commission_rate=args.commission,
         min_commission=args.min_commission,
