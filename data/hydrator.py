@@ -59,6 +59,10 @@ def _normalize_day(value: date | str | pd.Timestamp) -> pd.Timestamp:
     return pd.Timestamp(value).normalize()
 
 
+def _is_adjusted(adjust: str) -> bool:
+    return str(adjust or "none").lower() in {"qfq", "hfq"}
+
+
 def _coverage_bounds(store, code: str, interval: str, adjust: str):
     coverage_fn = getattr(store, "coverage_bounds", None)
     if callable(coverage_fn):
@@ -73,11 +77,29 @@ def _coverage_bounds(store, code: str, interval: str, adjust: str):
         return bounds_fn(code, interval)
 
 
+def _load_history(store, code: str, interval: str, start, end, adjust: str):
+    try:
+        return store.load_history(code, interval, start, end, adjust=adjust)
+    except TypeError:
+        return store.load_history(code, interval, start, end)
+
+
 def _save_history(store, code: str, interval: str, df: pd.DataFrame, adjust: str) -> None:
     try:
         store.save_history(code, interval, df, adjust=adjust)
     except TypeError:
         store.save_history(code, interval, df)
+
+
+def _clear_history(store, code: str, interval: str, adjust: str) -> bool:
+    fn = getattr(store, "clear_history", None)
+    if not callable(fn):
+        return False
+    try:
+        fn(code, interval, adjust=adjust)
+    except TypeError:
+        fn(code, interval)
+    return True
 
 
 def _mark_coverage(store, code: str, interval: str, start, end, adjust: str) -> None:
@@ -90,6 +112,25 @@ def _mark_coverage(store, code: str, interval: str, start, end, adjust: str) -> 
         mark_fn(code, interval, start, end)
 
 
+def _adjustment_scale_changed(cached: pd.DataFrame, fresh: pd.DataFrame) -> bool:
+    if cached is None or fresh is None or cached.empty or fresh.empty:
+        return False
+    if not {"datetime", "close"}.issubset(cached.columns) or not {"datetime", "close"}.issubset(fresh.columns):
+        return False
+    left = cached[["datetime", "close"]].copy()
+    right = fresh[["datetime", "close"]].copy()
+    left["datetime"] = pd.to_datetime(left["datetime"])
+    right["datetime"] = pd.to_datetime(right["datetime"])
+    left["close"] = pd.to_numeric(left["close"], errors="coerce")
+    right["close"] = pd.to_numeric(right["close"], errors="coerce")
+    merged = left.merge(right, on="datetime", suffixes=("_cached", "_fresh")).dropna()
+    if merged.empty:
+        return False
+    diff = (merged["close_cached"] - merged["close_fresh"]).abs()
+    scale = merged[["close_cached", "close_fresh"]].abs().max(axis=1).clip(lower=1.0)
+    return bool((diff / scale > 1e-6).any())
+
+
 def plan_missing_ranges(
     codes: list[str],
     store: DuckDBStore,
@@ -97,9 +138,13 @@ def plan_missing_ranges(
     end: date | str | pd.Timestamp,
     interval: str = "1d",
     adjust: str = "qfq",
+    adjusted_overlap_days: int = 10,
 ) -> list[tuple[str, pd.Timestamp, pd.Timestamp]]:
+    """Plan fetch work; adjusted tails intentionally include a small overlap."""
     start_ts = _normalize_day(start)
     end_ts = _normalize_day(end)
+    overlap_days = max(3, int(adjusted_overlap_days))
+    adjusted = _is_adjusted(adjust)
     tasks: list[tuple[str, pd.Timestamp, pd.Timestamp]] = []
     for raw_code in codes:
         code = str(raw_code).zfill(6)
@@ -109,10 +154,19 @@ def plan_missing_ranges(
             continue
         low = low.normalize()
         high = high.normalize()
-        if start_ts < low:
-            tasks.append((code, start_ts, low - pd.Timedelta(days=1)))
-        if end_ts > high:
-            tasks.append((code, high + pd.Timedelta(days=1), end_ts))
+        if adjusted and start_ts < low:
+            # New left history is fetched through the existing right edge so
+            # request-end-anchored qfq providers cannot create another scale.
+            tasks.append((code, start_ts, max(end_ts, high)))
+        else:
+            if start_ts < low:
+                tasks.append((code, start_ts, low - pd.Timedelta(days=1)))
+            if end_ts > high:
+                if adjusted:
+                    overlap_left = max(low, high - pd.Timedelta(days=overlap_days))
+                    tasks.append((code, overlap_left, end_ts))
+                else:
+                    tasks.append((code, high + pd.Timedelta(days=1), end_ts))
     return [task for task in tasks if task[1] <= task[2]]
 
 
@@ -156,24 +210,36 @@ def hydrate_codes(
     requests_per_second: float = 4.0,
     retries: int = 2,
     base_delay: float = 0.5,
+    adjusted_overlap_days: int = 10,
 ) -> HydrationReport:
-    """Fetch missing ranges concurrently and serialize writes into DuckDB.
+    """Fetch missing ranges concurrently and serialize cache writes.
 
-    The entire hydration path is adjustment-aware. A raw/none request never
-    consumes qfq coverage and vice versa.
+    qfq/hfq extension work includes a small overlap. When overlap closes differ,
+    the affected symbol's full known adjusted span is refetched and the old
+    namespace is cleared before insertion. This gives the parallel all-market
+    hydrator the same corporate-action safety semantics as ``CachedProvider``.
 
-    Coverage semantics are conservative:
-    - successful daily request confirms the requested calendar span;
-    - successful intraday request confirms only the actually returned span;
-    - daily ``NoMarketData`` closes only a short <=4-day calendar gap, useful
-      for weekends/short holidays. A long no-data span is a visible failure,
-      because it may mean unsupported market/provider retention rather than a
-      genuine suspension or holiday.
+    Long ``NoMarketData`` ranges fail closed; only <=4-day daily gaps may be
+    marked covered automatically for weekend/short-holiday behavior.
     """
 
     adjust = str(adjust or "none")
+    start_ts = _normalize_day(start)
+    end_ts = _normalize_day(end)
     normalized_codes = list(dict.fromkeys(str(c).zfill(6) for c in codes if str(c).strip()))
-    tasks = plan_missing_ranges(normalized_codes, store, start, end, interval=interval, adjust=adjust)
+    tasks = plan_missing_ranges(
+        normalized_codes,
+        store,
+        start_ts,
+        end_ts,
+        interval=interval,
+        adjust=adjust,
+        adjusted_overlap_days=adjusted_overlap_days,
+    )
+    # Snapshot pre-fetch coverage so scale checks compare against the old cache,
+    # not against rows written by another task later in this same run.
+    old_coverage = {code: _coverage_bounds(store, code, interval, adjust) for code in normalized_codes}
+
     started = time.perf_counter()
     failures: list[HydrationFailure] = []
     succeeded = 0
@@ -203,6 +269,43 @@ def hydrate_codes(
                 df = future.result()
                 if df is None or df.empty:
                     raise NoMarketData("provider returned empty history")
+
+                old_low, old_high = old_coverage.get(code, (None, None))
+                scale_changed = False
+                if _is_adjusted(adjust) and old_low is not None and old_high is not None:
+                    old_low = pd.Timestamp(old_low).normalize()
+                    old_high = pd.Timestamp(old_high).normalize()
+                    overlap_left = max(left, old_low)
+                    overlap_right = min(right, old_high)
+                    if overlap_left <= overlap_right:
+                        cached_overlap = _load_history(store, code, interval, overlap_left, overlap_right, adjust)
+                        scale_changed = _adjustment_scale_changed(cached_overlap, df)
+
+                if scale_changed:
+                    rebuild_left = min(start_ts, old_low) if old_low is not None else start_ts
+                    rebuild_right = max(end_ts, old_high) if old_high is not None else end_ts
+                    rebuilt = _fetch_task(
+                        provider_factory,
+                        limiter,
+                        code,
+                        rebuild_left,
+                        rebuild_right,
+                        interval,
+                        adjust,
+                        retries,
+                        base_delay,
+                    )
+                    if rebuilt is None or rebuilt.empty:
+                        raise NoMarketData("provider returned empty history during adjusted-cache rebuild")
+                    if _clear_history(store, code, interval, adjust):
+                        _save_history(store, code, interval, rebuilt, adjust)
+                    else:
+                        _save_history(store, code, interval, rebuilt, adjust)
+                    _mark_coverage(store, code, interval, rebuild_left, rebuild_right, adjust)
+                    succeeded += 1
+                    fetched_rows += len(rebuilt)
+                    continue
+
                 _save_history(store, code, interval, df, adjust)
                 if interval in {"1d", "day"}:
                     covered_left, covered_right = left, right
