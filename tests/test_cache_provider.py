@@ -74,3 +74,15 @@ def test_cached_provider_reuses_history_and_universe():
     assert len(first) == len(second)
     assert second.attrs["name"] == "DEMO-300059"
     assert raw.history_calls == 1
+
+
+def test_cached_provider_reuses_5m_history():
+    raw = CountingDemo()
+    cached = CachedProvider(raw, MemoryStore())
+    start = date(2026, 8, 3)
+    end = date(2026, 8, 7)
+    first = cached.history("300059", start, end, interval="5m")
+    second = cached.history("300059", start, end, interval="5m")
+    assert len(first) == len(second)
+    assert len(first) > 20
+    assert raw.history_calls == 1

@@ -8,6 +8,7 @@ import streamlit as st
 from data.cached_provider import CachedProvider
 from data.hydrator import hydrate_codes
 from data.validator import validate_ohlcv
+from backtest.t_engine import CostModel, best_single_t_envelope, mean_reversion_backtest, summarize_trades
 from features.daily import daily_features
 from features.intraday import intraday_opportunity_features
 from providers.akshare_provider import AkshareProvider
@@ -86,7 +87,7 @@ if st.sidebar.button("检查数据源健康"):
             st.error(f"异常 · {health.error}")
 
 
-tab1, tab2, tab3 = st.tabs(["自选池扫描", "全市场扫描", "单股深度分析"])
+tab1, tab2, tab3, tab4 = st.tabs(["自选池扫描", "全市场扫描", "单股深度分析", "T回测实验室"])
 
 with tab1:
     default_codes = Path("config/watchlist.txt").read_text(encoding="utf-8") if Path("config/watchlist.txt").exists() else "300059\n601899\n601138"
@@ -187,6 +188,68 @@ with tab3:
                 st.json(intra)
             except Exception as minute_exc:
                 st.info(f"分钟数据当前不可用：{minute_exc}")
+        except Exception as exc:
+            st.error(str(exc))
+
+
+with tab4:
+    st.warning("“历史最佳T空间”使用全天数据挑选最佳买卖顺序，只用于衡量机会天花板，不能当作可执行策略。滚动Z分数基线只使用当时及以前数据，并延后一根5分钟K执行。")
+    bt_code = st.text_input("回测股票代码", "300059", max_chars=6, key="bt_code")
+    bt_days = st.slider("回测自然日", 10, 180, 60, 10)
+    bt_mode_ui = st.radio("T方向", ["正T（先买后卖旧底仓）", "倒T（先卖旧底仓后买回）"], horizontal=True)
+    bt_mode = "positive" if bt_mode_ui.startswith("正T") else "reverse"
+    c1, c2, c3 = st.columns(3)
+    bottom_shares = c1.number_input("开盘前底仓（股）", min_value=100, value=1000, step=100)
+    t_ratio = c2.slider("单次T仓占底仓比例", 0.1, 1.0, 0.5, 0.1)
+    window = c3.slider("滚动窗口（5分钟K）", 3, 20, 6)
+    c4, c5, c6, c7 = st.columns(4)
+    commission_pct = c4.number_input("券商佣金（%）", min_value=0.0, value=0.03, step=0.005, format="%.3f")
+    min_commission = c5.number_input("最低佣金（元/边）", min_value=0.0, value=5.0, step=1.0)
+    stamp_pct = c6.number_input("卖出印花税（%）", min_value=0.0, value=0.05, step=0.01, format="%.3f")
+    slippage_bps = c7.number_input("单边滑点（bp）", min_value=0.0, value=2.0, step=0.5)
+    c8, c9 = st.columns(2)
+    other_pct = c8.number_input("其他单边费率（%）", min_value=0.0, value=0.0, step=0.001, format="%.4f")
+    entry_z = c9.slider("入场Z阈值", 0.5, 3.0, 1.0, 0.1)
+
+    if st.button("运行T回测", type="primary"):
+        provider, _ = provider_and_store()
+        bt_end = date.today()
+        costs = CostModel(
+            commission_rate=float(commission_pct) / 100.0,
+            min_commission=float(min_commission),
+            stamp_duty_sell_rate=float(stamp_pct) / 100.0,
+            other_rate_per_side=float(other_pct) / 100.0,
+            slippage_bps=float(slippage_bps),
+        )
+        try:
+            bars = validate_ohlcv(provider.history(bt_code, bt_end - timedelta(days=int(bt_days)), bt_end, interval="5m", adjust="qfq"))
+            envelope = best_single_t_envelope(bars, bt_mode, int(bottom_shares), float(t_ratio), costs)
+            baseline = mean_reversion_backtest(
+                bars,
+                bt_mode,
+                int(bottom_shares),
+                float(t_ratio),
+                costs,
+                window=int(window),
+                entry_z=float(entry_z),
+            )
+            env_sum = summarize_trades(envelope)
+            base_sum = summarize_trades(baseline)
+            st.subheader("因果基线结果")
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("交易天数", base_sum.trades)
+            m2.metric("胜率", f"{base_sum.win_rate:.2f}%")
+            m3.metric("累计净收益额", f"{base_sum.total_net_pnl:.2f} 元")
+            m4.metric("平均单次净收益率", f"{base_sum.avg_net_return_pct:.3f}%")
+            if not baseline.empty:
+                st.dataframe(baseline.sort_values("date", ascending=False), use_container_width=True, hide_index=True)
+            st.subheader("历史机会天花板（后视，不可直接交易）")
+            e1, e2, e3 = st.columns(3)
+            e1.metric("有序机会天数", env_sum.trades)
+            e2.metric("平均净空间", f"{env_sum.avg_net_return_pct:.3f}%")
+            e3.metric("理论累计净收益额", f"{env_sum.total_net_pnl:.2f} 元")
+            if not envelope.empty:
+                st.dataframe(envelope.sort_values("date", ascending=False), use_container_width=True, hide_index=True)
         except Exception as exc:
             st.error(str(exc))
 
