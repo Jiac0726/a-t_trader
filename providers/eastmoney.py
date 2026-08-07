@@ -83,20 +83,44 @@ class EastmoneyProvider(MarketDataProvider):
             raise MarketDataError(f"Eastmoney request failed: {exc}") from exc
 
     def stock_list(self) -> pd.DataFrame:
-        params: dict[str, Any] = {
-            "pn": "1",
-            "pz": "10000",
+        # Eastmoney currently caps clist/get responses well below arbitrarily
+        # large `pz` values (the live CI observed 100 rows for pz=10000).
+        # Fetch deterministic pages instead of assuming one oversized request
+        # can represent the whole market.
+        page_size = 100
+        max_pages = 100
+        base_params: dict[str, Any] = {
+            "pz": str(page_size),
             "po": "1",
             "np": "1",
             "ut": "bd1d9ddb04089700cf9c27f6f7426281",
             "fltt": "2",
             "invt": "2",
-            "fid": "f3",
+            # Code ordering is materially more stable across pages than a
+            # rapidly changing percentage-change ranking.
+            "fid": "f12",
             "fs": "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048",
             "fields": "f12,f14,f13,f2,f3,f5,f6,f8,f15,f16",
         }
-        payload = self._get_json(self._LIST_URL, params)
-        diff = ((payload.get("data") or {}).get("diff") or [])
+        diff: list[dict[str, Any]] = []
+        expected_total: int | None = None
+        for page in range(1, max_pages + 1):
+            params = {**base_params, "pn": str(page)}
+            payload = self._get_json(self._LIST_URL, params)
+            data = payload.get("data") or {}
+            page_rows = data.get("diff") or []
+            if expected_total is None:
+                try:
+                    expected_total = int(data.get("total") or 0) or None
+                except (TypeError, ValueError):
+                    expected_total = None
+            if not page_rows:
+                break
+            diff.extend(page_rows)
+            if expected_total is not None and len(diff) >= expected_total:
+                break
+            if len(page_rows) < page_size:
+                break
         if not diff:
             raise MarketDataError("Eastmoney returned empty A-share universe")
         rows = []
@@ -122,7 +146,12 @@ class EastmoneyProvider(MarketDataProvider):
         if out.empty:
             raise MarketDataError("Eastmoney A-share universe could not be parsed")
         if len(out) < 3000:
-            raise MarketDataError(f"Eastmoney A-share universe suspiciously small: {len(out)}")
+            suffix = f"; upstream total={expected_total}" if expected_total is not None else ""
+            raise MarketDataError(f"Eastmoney A-share universe suspiciously small: {len(out)}{suffix}")
+        if expected_total is not None and len(out) < min(3000, int(expected_total * 0.9)):
+            raise MarketDataError(
+                f"Eastmoney A-share universe incomplete after pagination: parsed={len(out)}, upstream_total={expected_total}"
+            )
         for col in ["latest", "pct_change", "volume", "amount", "turnover", "high", "low"]:
             out[col] = pd.to_numeric(out[col], errors="coerce")
         out.attrs["provider"] = self.name
