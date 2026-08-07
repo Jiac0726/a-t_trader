@@ -59,23 +59,51 @@ def _normalize_day(value: date | str | pd.Timestamp) -> pd.Timestamp:
     return pd.Timestamp(value).normalize()
 
 
+def _coverage_bounds(store, code: str, interval: str, adjust: str):
+    coverage_fn = getattr(store, "coverage_bounds", None)
+    if callable(coverage_fn):
+        try:
+            return coverage_fn(code, interval, adjust=adjust)
+        except TypeError:
+            return coverage_fn(code, interval)
+    bounds_fn = store.history_bounds
+    try:
+        return bounds_fn(code, interval, adjust=adjust)
+    except TypeError:
+        return bounds_fn(code, interval)
+
+
+def _save_history(store, code: str, interval: str, df: pd.DataFrame, adjust: str) -> None:
+    try:
+        store.save_history(code, interval, df, adjust=adjust)
+    except TypeError:
+        store.save_history(code, interval, df)
+
+
+def _mark_coverage(store, code: str, interval: str, start, end, adjust: str) -> None:
+    mark_fn = getattr(store, "mark_history_coverage", None)
+    if not callable(mark_fn):
+        return
+    try:
+        mark_fn(code, interval, start, end, adjust=adjust)
+    except TypeError:
+        mark_fn(code, interval, start, end)
+
+
 def plan_missing_ranges(
     codes: list[str],
     store: DuckDBStore,
     start: date | str | pd.Timestamp,
     end: date | str | pd.Timestamp,
     interval: str = "1d",
+    adjust: str = "qfq",
 ) -> list[tuple[str, pd.Timestamp, pd.Timestamp]]:
     start_ts = _normalize_day(start)
     end_ts = _normalize_day(end)
     tasks: list[tuple[str, pd.Timestamp, pd.Timestamp]] = []
     for raw_code in codes:
         code = str(raw_code).zfill(6)
-        coverage_fn = getattr(store, "coverage_bounds", None)
-        if callable(coverage_fn):
-            low, high = coverage_fn(code, interval)
-        else:
-            low, high = store.history_bounds(code, interval)
+        low, high = _coverage_bounds(store, code, interval, adjust)
         if low is None or high is None:
             tasks.append((code, start_ts, end_ts))
             continue
@@ -129,21 +157,23 @@ def hydrate_codes(
     retries: int = 2,
     base_delay: float = 0.5,
 ) -> HydrationReport:
-    """Fetch missing K-line ranges concurrently, write them to DuckDB serially.
+    """Fetch missing ranges concurrently and serialize writes into DuckDB.
 
-    Fetch workers each create their own provider instance so requests.Session and
-    provider-local state are not shared across threads. DuckDB writes stay on the
-    caller thread, avoiding concurrent writer conflicts.
+    The entire hydration path is adjustment-aware. A raw/none request never
+    consumes qfq coverage and vice versa.
 
-    Coverage semantics are intentionally different by granularity: a successful
-    daily request confirms the requested calendar range (including weekends and
-    holidays), while intraday public endpoints are allowed to silently truncate
-    older history, so minute coverage is marked only over timestamps actually
-    returned by the provider.
+    Coverage semantics are conservative:
+    - successful daily request confirms the requested calendar span;
+    - successful intraday request confirms only the actually returned span;
+    - daily ``NoMarketData`` closes only a short <=4-day calendar gap, useful
+      for weekends/short holidays. A long no-data span is a visible failure,
+      because it may mean unsupported market/provider retention rather than a
+      genuine suspension or holiday.
     """
 
+    adjust = str(adjust or "none")
     normalized_codes = list(dict.fromkeys(str(c).zfill(6) for c in codes if str(c).strip()))
-    tasks = plan_missing_ranges(normalized_codes, store, start, end, interval=interval)
+    tasks = plan_missing_ranges(normalized_codes, store, start, end, interval=interval, adjust=adjust)
     started = time.perf_counter()
     failures: list[HydrationFailure] = []
     succeeded = 0
@@ -173,36 +203,32 @@ def hydrate_codes(
                 df = future.result()
                 if df is None or df.empty:
                     raise NoMarketData("provider returned empty history")
-                store.save_history(code, interval, df)
-                mark_fn = getattr(store, "mark_history_coverage", None)
-                if callable(mark_fn):
-                    if interval in {"1d", "day"}:
-                        # Daily providers can legitimately omit weekends/holidays,
-                        # so a successful request confirms the whole calendar range.
-                        covered_left, covered_right = left, right
-                    else:
-                        # Intraday public sources may silently truncate history.
-                        # Never mark an unreturned early range as covered merely
-                        # because a recent slice succeeded.
-                        returned = pd.to_datetime(df["datetime"], errors="coerce").dropna()
-                        if returned.empty:
-                            raise NoMarketData("provider returned no parseable timestamps")
-                        covered_left = pd.Timestamp(returned.min()).normalize()
-                        covered_right = pd.Timestamp(returned.max()).normalize()
-                    mark_fn(code, interval, covered_left, covered_right)
+                _save_history(store, code, interval, df, adjust)
+                if interval in {"1d", "day"}:
+                    covered_left, covered_right = left, right
+                else:
+                    returned = pd.to_datetime(df["datetime"], errors="coerce").dropna()
+                    if returned.empty:
+                        raise NoMarketData("provider returned no parseable timestamps")
+                    covered_left = pd.Timestamp(returned.min()).normalize()
+                    covered_right = pd.Timestamp(returned.max()).normalize()
+                _mark_coverage(store, code, interval, covered_left, covered_right, adjust)
                 succeeded += 1
                 fetched_rows += len(df)
             except NoMarketData:
-                mark_fn = getattr(store, "mark_history_coverage", None)
-                if callable(mark_fn) and interval in {"1d", "day"}:
-                    # For daily bars, a clean no-data response can safely close
-                    # weekends/holidays/suspension-only ranges. Intraday no-data
-                    # may instead mean provider retention limits, so keep it as
-                    # a visible failure rather than claiming historical coverage.
-                    mark_fn(code, interval, left, right)
+                span_days = int((right - left).days) + 1
+                if interval in {"1d", "day"} and span_days <= 4:
+                    _mark_coverage(store, code, interval, left, right, adjust)
                     succeeded += 1
                 else:
-                    failures.append(HydrationFailure(code, left.date().isoformat(), right.date().isoformat(), "no market data"))
+                    failures.append(
+                        HydrationFailure(
+                            code,
+                            left.date().isoformat(),
+                            right.date().isoformat(),
+                            f"no market data for {span_days}-day range",
+                        )
+                    )
             except Exception as exc:
                 failures.append(
                     HydrationFailure(
