@@ -13,6 +13,7 @@ dependencies = [
 
 [project.optional-dependencies]
 akshare = ["akshare>=1.17"]
+baostock = ["baostock>=0.9.3"]
 dev = ["pytest>=8"]
 
 [tool.pytest.ini_options]
