@@ -17,6 +17,7 @@ from dataset.builder import (
     select_minute_candidates,
     universe_codes_from_lifecycle,
 )
+from dataset.quality import apply_oos_quality_gate
 from providers.baostock_master import BaostockSecurityMasterProvider
 from storage.duckdb_store import DuckDBStore
 from storage.security_snapshot_store import DuckDBSecuritySnapshotStore
@@ -126,6 +127,13 @@ def main() -> None:
         adjust=MINUTE_LABEL_ADJUST,
     )
     coverage = minute_coverage_report(minute_codes, store, adjust=MINUTE_LABEL_ADJUST)
+    labeled, quality_gate = apply_oos_quality_gate(
+        labeled,
+        coverage,
+        required_daily_adjust=DAILY_ADJUST,
+        required_minute_adjust=MINUTE_LABEL_ADJUST,
+    )
+    oos_eligible = labeled[labeled["oos_eligible"].fillna(False).astype(bool)].copy() if not labeled.empty and "oos_eligible" in labeled.columns else pd.DataFrame()
 
     def write_panel(frame: pd.DataFrame, stem: str) -> str:
         parquet = out_dir / f"{stem}.parquet"
@@ -139,6 +147,7 @@ def main() -> None:
 
     daily_panel_file = write_panel(daily_panel, "daily_score_panel")
     labeled_panel_file = write_panel(labeled, "labeled_panel")
+    oos_eligible_panel_file = write_panel(oos_eligible, "oos_eligible_panel")
     coverage.to_csv(out_dir / "minute_coverage.csv", index=False, encoding="utf-8-sig")
 
     failures = [*score_failures, *label_failures]
@@ -163,6 +172,11 @@ def main() -> None:
         "minute_amount_quality_values": sorted(coverage["amount_quality"].dropna().astype(str).unique().tolist()) if not coverage.empty and "amount_quality" in coverage.columns else [],
     }
 
+    quality_payload = quality_gate.to_dict()
+    quality_payload["requires_exact_point_in_time_snapshots_for_promotion"] = True
+    quality_payload["exact_point_in_time_snapshots_used"] = bool(args.exact_snapshots)
+    quality_payload["promotion_ready_dataset"] = bool(args.exact_snapshots and quality_gate.eligible_rows > 0)
+
     payload = {
         "build": build.to_dict(),
         "daily_hydration": daily_report.to_dict(),
@@ -170,9 +184,11 @@ def main() -> None:
         "minute_coverage_rows": len(coverage),
         "daily_panel_file": daily_panel_file,
         "labeled_panel_file": labeled_panel_file,
+        "oos_eligible_panel_file": oos_eligible_panel_file,
         "universe_filter": "exact_snapshots" if args.exact_snapshots else ("lifecycle" if master is not None else "current_provider"),
         "snapshot_rows": 0 if snapshots is None else int(len(snapshots)),
         "lineage": lineage,
+        "quality_gate": quality_payload,
     }
     (out_dir / "manifest.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
