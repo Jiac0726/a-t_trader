@@ -35,17 +35,19 @@ def _codes(values: Iterable[str]) -> list[str]:
 
 
 def universe_codes_from_lifecycle(master: pd.DataFrame, start, end) -> list[str]:
-    """Return securities whose lifecycle intersects the research range.
+    """Return the union of securities alive at either boundary of a research range.
 
     This is a download-planning helper, not the final point-in-time membership
     filter. Exact score rows should still be filtered by snapshots where they are
-    available. Including interior IPO/delist names prevents survivor bias in the
-    download plan.
+    available. Including both boundaries prevents currently delisted-but-relevant
+    historical names from disappearing from the research download plan.
     """
     if master is None or master.empty:
         return []
     start_frame = point_in_time_from_lifecycle(master, start)
     end_frame = point_in_time_from_lifecycle(master, end)
+    # Also include securities whose lifecycle intersects the interior even when
+    # they are absent at both boundaries (IPO and delist inside the range).
     x = master.copy()
     x["ipo_date"] = pd.to_datetime(x.get("ipo_date"), errors="coerce").dt.normalize()
     x["delist_date"] = pd.to_datetime(x.get("delist_date"), errors="coerce").dt.normalize()
@@ -70,15 +72,13 @@ def build_daily_score_panel(
 ) -> tuple[pd.DataFrame, list[DatasetFailure]]:
     """Build date×stock score rows strictly from daily bars already in storage.
 
-    Network hydration is deliberately outside this function. Downloading can
-    fail independently while cached bars can always be rebuilt deterministically.
+    Network hydration is deliberately outside this function. That separation
+    makes dataset construction deterministic/restartable: downloading can fail
+    independently, while already-cached bars can always be rebuilt into the same
+    score panel.
     """
     failures: list[DatasetFailure] = []
     frames: list[pd.DataFrame] = []
-    normalized_master = None
-    if master is not None and not master.empty and "code" in master.columns:
-        normalized_master = master.copy()
-        normalized_master["code"] = normalized_master["code"].astype(str).str.replace(r"\.0$", "", regex=True).str.zfill(6)
     for code in _codes(codes):
         try:
             daily = store.load_history(code, "1d", start=start, end=end)
@@ -86,11 +86,12 @@ def build_daily_score_panel(
                 failures.append(DatasetFailure(code, "daily_score", f"insufficient daily rows: {0 if daily is None else len(daily)}"))
                 continue
             name = ""
-            if normalized_master is not None:
-                hit = normalized_master[normalized_master["code"] == code]
+            if master is not None and not master.empty and "code" in master.columns:
+                m = master.copy()
+                m["code"] = m["code"].astype(str).str.replace(r"\.0$", "", regex=True).str.zfill(6)
+                hit = m[m["code"] == code]
                 if not hit.empty and "name" in hit.columns:
-                    value = hit.iloc[-1]["name"]
-                    name = "" if pd.isna(value) else str(value)
+                    name = str(hit.iloc[-1]["name"] or "")
             frame = build_score_history(code, daily, lookback=lookback, name=name, provider="duckdb")
             if not frame.empty:
                 frame["code"] = code
@@ -126,17 +127,16 @@ def attach_minute_labels_from_store(
 ) -> tuple[pd.DataFrame, list[DatasetFailure]]:
     """Attach future T-opportunity labels wherever 5-minute cache really exists.
 
-    Missing minute history stays missing. We never manufacture a long label
-    window merely because the daily panel itself is long.
+    Missing minute history stays missing. We never manufacture a 500-day label
+    window merely because the daily panel is long.
     """
     if score_panel is None or score_panel.empty:
         return pd.DataFrame(), []
     wanted = _codes(codes if codes is not None else score_panel["code"].unique())
     failures: list[DatasetFailure] = []
     labeled_by_code: dict[str, pd.DataFrame] = {}
-    normalized_codes = score_panel["code"].astype(str).str.zfill(6)
     for code in wanted:
-        scores = score_panel[normalized_codes == code].copy()
+        scores = score_panel[score_panel["code"].astype(str).str.zfill(6) == code].copy()
         if scores.empty:
             continue
         try:
@@ -157,6 +157,25 @@ def attach_minute_labels_from_store(
             labeled_by_code[code] = scores.assign(forward_opportunity_pct=float("nan"), forward_days=0)
     labeled = combine_labeled_panels(labeled_by_code)
     return labeled, failures
+
+
+def select_minute_candidates(score_panel: pd.DataFrame, limit: int) -> list[str]:
+    """Choose a bounded minute-hydration batch from the latest daily score rows.
+
+    Score is primary, recent median amount is the tie-breaker. This keeps the
+    expensive minute stage aligned with the product goal instead of arbitrary
+    lexical code order.
+    """
+    if score_panel is None or score_panel.empty or int(limit) <= 0:
+        return []
+    x = score_panel.copy()
+    x["date"] = pd.to_datetime(x["date"], errors="coerce")
+    x["code"] = x["code"].astype(str).str.zfill(6)
+    latest = x.sort_values(["code", "date"]).groupby("code", as_index=False).tail(1)
+    latest["score"] = pd.to_numeric(latest.get("score"), errors="coerce").fillna(-1)
+    latest["median_amount"] = pd.to_numeric(latest.get("median_amount"), errors="coerce").fillna(0)
+    latest = latest.sort_values(["score", "median_amount", "code"], ascending=[False, False, True])
+    return latest["code"].head(int(limit)).tolist()
 
 
 def minute_coverage_report(codes: Iterable[str], store) -> pd.DataFrame:
