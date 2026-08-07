@@ -95,18 +95,21 @@ def main() -> None:
     reference = make_benchmark_provider(args.benchmark_provider)
     master = None
     if args.with_baostock:
-        # Split failure domains: BaoStock has proven stable for SH/SZ identity
-        # and historical bars on GitHub runners, BSE identity stays on its own
-        # official endpoint, and Tencent handles current 920 BSE price history.
+        # Split failure domains deliberately:
+        # - BaoStock is the proven first choice for SH/SZ history and snapshots.
+        # - the normal market chain then supplies Eastmoney/AKShare/Tencent;
+        #   Tencent is the independent current BSE 920xxx history fallback.
+        # - current identity finally comes from BaoStock SH/SZ + BSE official.
         raw = BaostockSecurityMasterProvider()
         master = CachedSecurityMasterProvider(raw, DuckDBSecuritySnapshotStore(args.db))
         market = ProviderChain([
-            market,
             RetryingProvider(BaostockHistoryProvider(), attempts=2),
-            RetryingProvider(TencentHistoryProvider(), attempts=2),
+            market,
             BaostockBseUniverseProvider(master),
         ])
-        reference = BenchmarkProviderChain([reference, BaostockBenchmarkProvider()])
+        # Avoid wasting the live gate on blocked public quote hosts when the
+        # independent BaoStock reference path has already proved reachable.
+        reference = BenchmarkProviderChain([BaostockBenchmarkProvider(), reference])
     report = run_live_validation(
         market,
         reference,
