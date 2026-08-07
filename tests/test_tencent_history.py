@@ -47,6 +47,14 @@ def test_tencent_routes_920_to_bj_and_normalizes_daily():
     assert out["amount"].gt(0).all()
 
 
+def test_tencent_routes_legacy_bse_codes_to_bj_for_history_only():
+    assert TencentHistoryProvider._symbol("832000") == "bj832000"
+    assert TencentHistoryProvider._symbol("430017") == "bj430017"
+    assert TencentHistoryProvider._symbol("873706") == "bj873706"
+    assert TencentHistoryProvider._symbol("600519") == "sh600519"
+    assert TencentHistoryProvider._symbol("300750") == "sz300750"
+
+
 def test_tencent_supports_5m_and_keeps_amount_quality_explicit():
     session = Session()
     provider = TencentHistoryProvider(session=session)
