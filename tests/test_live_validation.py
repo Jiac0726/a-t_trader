@@ -112,3 +112,18 @@ def test_live_validation_fails_low_shsz_membership_overlap():
     )
     assert not report.ok
     assert any(x.name == "point_in_time_overlap_shsz" and x.status == "FAIL" for x in report.checks)
+
+
+def test_market_representative_probe_skips_unusable_first_candidate():
+    class FirstBjBroken(Market):
+        def history(self, code, start, end, interval="1d", adjust="qfq"):
+            if interval == "1d" and str(code).zfill(6) == "000002":
+                return bars(1)
+            return super().history(code, start, end, interval=interval, adjust=adjust)
+
+    report = run_live_validation(FirstBjBroken(), Bench(), end=date(2026, 2, 1))
+    assert report.ok
+    bj = next(x for x in report.checks if x.name == "daily_market_BJ")
+    assert bj.status == "PASS"
+    assert bj.data["code"] == "000005"
+    assert bj.data["attempted_before_success"]
