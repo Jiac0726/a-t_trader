@@ -16,7 +16,10 @@ from calibration.cross_sectional import (
 )
 from calibration.walkforward import attach_forward_labels, build_opportunity_history, build_score_history
 from data.cached_provider import CachedProvider
+from data.cached_security_master import CachedSecurityMasterProvider
 from data.validator import validate_ohlcv
+from providers.baostock_master import BaostockSecurityMasterProvider
+from providers.security_master import filter_panel_by_lifecycle, filter_panel_by_snapshots
 from storage.duckdb_store import DuckDBStore
 
 
@@ -40,6 +43,12 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--db", default="market.duckdb")
     parser.add_argument("--no-cache", action="store_true")
+    parser.add_argument(
+        "--security-master",
+        choices=["none", "baostock-lifecycle", "baostock-snapshot"],
+        default="none",
+        help="optional point-in-time universe filter before cross-sectional calibration",
+    )
     args = parser.parse_args()
 
     raw = make_provider(args.provider)
@@ -59,6 +68,20 @@ def main() -> None:
             print(f"skip {code}: {exc}")
 
     panel = combine_labeled_panels(frames).dropna(subset=["forward_opportunity_pct"]).reset_index(drop=True)
+    if args.security_master == "baostock-lifecycle":
+        master = BaostockSecurityMasterProvider().master()
+        before = len(panel)
+        panel = filter_panel_by_lifecycle(panel, master, unknown="drop")
+        print(f"lifecycle membership filter: {before} -> {len(panel)} rows")
+    elif args.security_master == "baostock-snapshot":
+        raw_master = BaostockSecurityMasterProvider()
+        master_provider = raw_master if args.no_cache else CachedSecurityMasterProvider(raw_master, DuckDBStore(args.db))
+        dates = sorted(pd.to_datetime(panel["date"]).dt.normalize().unique())
+        snapshots = master_provider.snapshot_many(dates)
+        before = len(panel)
+        panel = filter_panel_by_snapshots(panel, snapshots, include_suspended=False, unknown_dates="drop")
+        print(f"exact historical snapshot filter (tradable only): {before} -> {len(panel)} rows; snapshots={snapshots['as_of'].nunique() if not snapshots.empty else 0}")
+
     if panel.empty:
         raise SystemExit("No labeled multi-stock panel")
     print("\nCross-sectional fixed v0.1 summary:")
@@ -72,7 +95,7 @@ def main() -> None:
     print(weights.to_string(index=False) if not weights.empty else "Not enough dates")
     print("\nCross-sectional promotion gate:")
     print(assess_cross_sectional_promotion_gate(metrics))
-    print("\nWarning: real historical calibration must use a point-in-time universe; using only today's surviving stocks can create survivorship bias.")
+    print("\nWarning: formal calibration still requires real source-coverage validation; point-in-time filtering prevents obvious survivorship leakage but does not certify data completeness.")
 
 
 if __name__ == "__main__":
