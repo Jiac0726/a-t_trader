@@ -11,7 +11,6 @@ from app.cli import make_provider
 from data.cached_security_master import CachedSecurityMasterProvider
 from providers.baostock_master import BaostockSecurityMasterProvider
 from providers.baostock_daily import BaostockHistoryProvider
-from providers.tencent_history import TencentHistoryProvider
 from providers.composite_universe import BaostockBseUniverseProvider
 from providers.chain import ProviderChain
 from providers.retrying import RetryingProvider
@@ -97,15 +96,16 @@ def main() -> None:
     if args.with_baostock:
         # Split failure domains deliberately:
         # - BaoStock is the proven first choice for SH/SZ history and snapshots.
-        # - the normal market chain then supplies Eastmoney/AKShare/Tencent;
-        #   Tencent is the independent current BSE 920xxx history fallback.
-        # - current identity finally comes from BaoStock SH/SZ + BSE official.
+        # - current identity comes from BaoStock SH/SZ + the BSE official list.
+        # - the normal market chain stays available for price fallbacks, including
+        #   the independent Tencent 920xxx path for BSE history.
         raw = BaostockSecurityMasterProvider()
         master = CachedSecurityMasterProvider(raw, DuckDBSecuritySnapshotStore(args.db))
+        universe = BaostockBseUniverseProvider(master)
         market = ProviderChain([
             RetryingProvider(BaostockHistoryProvider(), attempts=2),
+            universe,
             market,
-            BaostockBseUniverseProvider(master),
         ])
         # Avoid wasting the live gate on blocked public quote hosts when the
         # independent BaoStock reference path has already proved reachable.
