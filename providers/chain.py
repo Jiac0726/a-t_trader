@@ -24,3 +24,16 @@ class ProviderChain(MarketDataProvider):
             except Exception as exc:
                 errors.append(f"{provider.name}: {exc}")
         raise MarketDataError("All providers failed: " + " | ".join(errors))
+
+    def stock_list(self) -> pd.DataFrame:
+        errors: list[str] = []
+        for provider in self.providers:
+            try:
+                df = provider.stock_list()
+                if df is None or df.empty:
+                    raise MarketDataError("empty stock list")
+                df.attrs["provider"] = provider.name
+                return df
+            except Exception as exc:
+                errors.append(f"{provider.name}: {exc}")
+        raise MarketDataError("All stock-list providers failed: " + " | ".join(errors))

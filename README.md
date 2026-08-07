@@ -110,3 +110,19 @@ streamlit run app/dashboard.py
 ## 风险说明
 
 本工具只用于历史行情研究和策略验证。公开数据接口可能发生限流、字段变化或停止服务；真实交易还涉及手续费、印花税、滑点、涨跌停、停牌、T+1、不同板块涨跌幅限制等规则，后续回测必须显式建模。
+
+## v0.2 全市场扫描（开发分支）
+
+启用 DuckDB 本地缓存后，可以从全A股股票池筛选候选并逐步建立历史缓存：
+
+```bash
+python -m app.cli --provider auto --all --limit 100 --min-spot-amount 500000000
+```
+
+强制刷新股票池：
+
+```bash
+python -m app.cli --provider auto --all --limit 100 --refresh-universe
+```
+
+首次全市场历史灌库仍需要进一步做批量/并发优化，因此当前建议先使用 `--limit 50~200` 验证。后续再次运行时，`CachedProvider` 只补本地缺失日期，不会重复下载完整历史区间。

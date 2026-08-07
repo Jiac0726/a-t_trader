@@ -28,5 +28,13 @@ class MarketDataProvider(ABC):
         """
         raise NotImplementedError
 
+    def stock_list(self) -> pd.DataFrame:
+        """Return normalized A-share universe with at least code/name/market.
+
+        Providers that cannot resolve the market universe should raise
+        MarketDataError so ProviderChain can fall back to another source.
+        """
+        raise MarketDataError(f"{self.name} does not implement stock_list")
+
     def stock_name(self, code: str) -> str:
         return ""

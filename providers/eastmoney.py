@@ -11,14 +11,15 @@ from .base import MarketDataError, MarketDataProvider
 
 
 class EastmoneyProvider(MarketDataProvider):
-    """Direct Eastmoney K-line adapter.
+    """Direct Eastmoney market-data adapter.
 
-    This keeps the market-data layer replaceable. Public endpoints can change or
-    rate-limit, so this provider must never be assumed to be permanently stable.
+    Public endpoints can change or rate-limit, so this provider is isolated and
+    can be replaced without touching the scoring layer.
     """
 
     name = "eastmoney-direct"
-    _URL = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
+    _HISTORY_URL = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
+    _LIST_URL = "https://push2.eastmoney.com/api/qt/clist/get"
 
     def __init__(self, timeout: float = 12.0, min_interval: float = 0.35):
         self.timeout = timeout
@@ -38,6 +39,15 @@ class EastmoneyProvider(MarketDataProvider):
         if code.startswith(("5", "6", "9")):
             return f"1.{code}"
         return f"0.{code}"
+
+    @staticmethod
+    def _market(code: str) -> str:
+        code = str(code).zfill(6)
+        if code.startswith(("4", "8", "92")):
+            return "BJ"
+        if code.startswith(("5", "6", "9")):
+            return "SH"
+        return "SZ"
 
     @staticmethod
     def _date_str(value: date | str) -> str:
@@ -63,6 +73,60 @@ class EastmoneyProvider(MarketDataProvider):
             time.sleep(wait)
         self._last_call = time.time()
 
+    def _get_json(self, url: str, params: dict[str, Any]) -> dict[str, Any]:
+        self._throttle()
+        try:
+            response = self.session.get(url, params=params, timeout=self.timeout)
+            response.raise_for_status()
+            return response.json()
+        except Exception as exc:
+            raise MarketDataError(f"Eastmoney request failed: {exc}") from exc
+
+    def stock_list(self) -> pd.DataFrame:
+        # Covers Shanghai, Shenzhen/ChiNext, STAR and Beijing A shares.
+        params: dict[str, Any] = {
+            "pn": "1",
+            "pz": "10000",
+            "po": "1",
+            "np": "1",
+            "ut": "bd1d9ddb04089700cf9c27f6f7426281",
+            "fltt": "2",
+            "invt": "2",
+            "fid": "f3",
+            "fs": "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048",
+            "fields": "f12,f14,f13,f2,f3,f5,f6,f8,f15,f16",
+        }
+        payload = self._get_json(self._LIST_URL, params)
+        diff = ((payload.get("data") or {}).get("diff") or [])
+        if not diff:
+            raise MarketDataError("Eastmoney returned empty A-share universe")
+        rows = []
+        for item in diff:
+            code = str(item.get("f12", "")).zfill(6)
+            if not code.isdigit() or len(code) != 6:
+                continue
+            rows.append(
+                {
+                    "code": code,
+                    "name": str(item.get("f14") or ""),
+                    "market": self._market(code),
+                    "latest": item.get("f2"),
+                    "pct_change": item.get("f3"),
+                    "volume": item.get("f5"),
+                    "amount": item.get("f6"),
+                    "turnover": item.get("f8"),
+                    "high": item.get("f15"),
+                    "low": item.get("f16"),
+                }
+            )
+        out = pd.DataFrame(rows).drop_duplicates("code").sort_values("code").reset_index(drop=True)
+        if out.empty:
+            raise MarketDataError("Eastmoney A-share universe could not be parsed")
+        for col in ["latest", "pct_change", "volume", "amount", "turnover", "high", "low"]:
+            out[col] = pd.to_numeric(out[col], errors="coerce")
+        out.attrs["provider"] = self.name
+        return out
+
     def history(self, code: str, start: date | str, end: date | str, interval: str = "1d", adjust: str = "qfq") -> pd.DataFrame:
         code = str(code).zfill(6)
         params: dict[str, Any] = {
@@ -75,12 +139,9 @@ class EastmoneyProvider(MarketDataProvider):
             "fields1": "f1,f2,f3,f4,f5,f6",
             "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
         }
-        self._throttle()
         try:
-            response = self.session.get(self._URL, params=params, timeout=self.timeout)
-            response.raise_for_status()
-            payload = response.json()
-        except Exception as exc:
+            payload = self._get_json(self._HISTORY_URL, params)
+        except MarketDataError as exc:
             raise MarketDataError(f"Eastmoney request failed for {code}: {exc}") from exc
 
         data = payload.get("data") or {}
@@ -123,5 +184,4 @@ class EastmoneyProvider(MarketDataProvider):
         return df
 
     def stock_name(self, code: str) -> str:
-        # Name is returned with K-line payload; resolving it separately would add another endpoint.
         return ""
