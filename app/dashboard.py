@@ -23,7 +23,7 @@ from storage.duckdb_store import DuckDBStore
 
 st.set_page_config(page_title="A股做T分析器", layout="wide")
 st.title("A股做T历史分析器 · v0.2")
-st.caption("量化历史日内交易空间；支持股票池、DuckDB缓存、并发灌库和数据源健康检查。")
+st.caption("量化历史日内交易空间；日线评分使用前复权，做T成本与分钟回测使用真实历史名义价格（不复权）。")
 
 provider_choice = st.sidebar.selectbox("数据源", ["自动降级", "东方财富直连", "AKShare", "离线演示"])
 lookback = st.sidebar.slider("日线回看交易日", 20, 120, 60, 10)
@@ -136,6 +136,8 @@ with tab2:
                         store=store,
                         start=end - timedelta(days=140),
                         end=end,
+                        interval="1d",
+                        adjust="qfq",
                         workers=workers,
                         requests_per_second=hydrate_rps,
                         retries=retries,
@@ -182,9 +184,9 @@ with tab3:
             st.dataframe(pd.DataFrame([score.to_dict()]), use_container_width=True, hide_index=True)
 
             try:
-                intraday = validate_ohlcv(provider.history(code, minute_start, end, interval="5m", adjust="qfq"))
+                intraday = validate_ohlcv(provider.history(code, minute_start, end, interval="5m", adjust="none"))
                 intra = intraday_opportunity_features(intraday, threshold_pct=1.0)
-                st.subheader("5分钟历史T机会")
+                st.subheader("5分钟历史T机会（不复权名义价格）")
                 st.json(intra)
             except Exception as minute_exc:
                 st.info(f"分钟数据当前不可用：{minute_exc}")
@@ -193,7 +195,7 @@ with tab3:
 
 
 with tab4:
-    st.warning("“历史最佳T空间”使用全天数据挑选最佳买卖顺序，只用于衡量机会天花板，不能当作可执行策略。滚动Z分数基线只使用当时及以前数据，并延后一根5分钟K执行。")
+    st.warning("“历史最佳T空间”使用全天数据挑选最佳买卖顺序，只用于衡量机会天花板，不能当作可执行策略。交易成本、最低佣金和股数约束均按不复权5分钟历史名义价格计算；滚动Z分数基线只使用当时及以前数据，并延后一根5分钟K执行。")
     bt_code = st.text_input("回测股票代码", "300059", max_chars=6, key="bt_code")
     bt_days = st.slider("回测自然日", 10, 180, 60, 10)
     bt_mode_ui = st.radio("T方向", ["正T（先买后卖旧底仓）", "倒T（先卖旧底仓后买回）"], horizontal=True)
@@ -222,7 +224,7 @@ with tab4:
             slippage_bps=float(slippage_bps),
         )
         try:
-            bars = validate_ohlcv(provider.history(bt_code, bt_end - timedelta(days=int(bt_days)), bt_end, interval="5m", adjust="qfq"))
+            bars = validate_ohlcv(provider.history(bt_code, bt_end - timedelta(days=int(bt_days)), bt_end, interval="5m", adjust="none"))
             envelope = best_single_t_envelope(bars, bt_mode, int(bottom_shares), float(t_ratio), costs)
             baseline = mean_reversion_backtest(
                 bars,
