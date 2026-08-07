@@ -31,9 +31,20 @@ def test_nested_provider_chain_preserves_leaf_provider_attr():
     assert df.attrs["provider"] == "leaf"
 
 
-def test_auto_provider_keeps_tencent_price_and_official_identity_fallbacks():
+def test_auto_provider_keeps_tencent_price_and_official_identity_fallbacks(monkeypatch):
     from app.cli import make_provider
+    monkeypatch.delenv("TUSHARE_TOKEN", raising=False)
     provider = make_provider("auto", retries=0)
     names = [getattr(x, "name", type(x).__name__) for x in provider.providers]
     assert "tencent-history" in names
+    assert "tushare-history" not in names
+    assert names[-1] == "official-exchange-universe"
+
+
+def test_auto_provider_adds_tushare_only_when_token_configured(monkeypatch):
+    from app.cli import make_provider
+    monkeypatch.setenv("TUSHARE_TOKEN", "configured-for-test")
+    provider = make_provider("auto", retries=0)
+    names = [getattr(x, "name", type(x).__name__) for x in provider.providers]
+    assert "tushare-history" in names
     assert names[-1] == "official-exchange-universe"
