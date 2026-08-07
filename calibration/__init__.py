@@ -1,3 +1,12 @@
+from .cross_sectional import (
+    CrossSectionalSummary,
+    assess_cross_sectional_promotion_gate,
+    combine_labeled_panels,
+    cross_sectional_quantile_summary,
+    daily_cross_sectional_ic,
+    summarize_cross_sectional,
+    walk_forward_cross_sectional_optimize,
+)
 from .optimizer import (
     COMPONENT_COLUMNS,
     DEFAULT_WEIGHTS,
@@ -22,6 +31,13 @@ from .walkforward import (
 )
 
 __all__ = [
+    "CrossSectionalSummary",
+    "assess_cross_sectional_promotion_gate",
+    "combine_labeled_panels",
+    "cross_sectional_quantile_summary",
+    "daily_cross_sectional_ic",
+    "summarize_cross_sectional",
+    "walk_forward_cross_sectional_optimize",
     "COMPONENT_COLUMNS",
     "DEFAULT_WEIGHTS",
     "WeightOptimizationResult",
