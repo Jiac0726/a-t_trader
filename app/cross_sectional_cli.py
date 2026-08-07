@@ -21,6 +21,7 @@ from data.validator import validate_ohlcv
 from providers.baostock_master import BaostockSecurityMasterProvider
 from providers.security_master import filter_panel_by_lifecycle, filter_panel_by_snapshots
 from storage.duckdb_store import DuckDBStore
+from storage.security_snapshot_store import DuckDBSecuritySnapshotStore
 
 
 def _parse_codes(value: str) -> list[str]:
@@ -75,7 +76,7 @@ def main() -> None:
         print(f"lifecycle membership filter: {before} -> {len(panel)} rows")
     elif args.security_master == "baostock-snapshot":
         raw_master = BaostockSecurityMasterProvider()
-        master_provider = raw_master if args.no_cache else CachedSecurityMasterProvider(raw_master, DuckDBStore(args.db))
+        master_provider = raw_master if args.no_cache else CachedSecurityMasterProvider(raw_master, DuckDBSecuritySnapshotStore(args.db))
         dates = sorted(pd.to_datetime(panel["date"]).dt.normalize().unique())
         snapshots = master_provider.snapshot_many(dates)
         before = len(panel)
