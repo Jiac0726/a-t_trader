@@ -19,7 +19,15 @@ class EastmoneyProvider(MarketDataProvider):
 
     name = "eastmoney-direct"
     _HISTORY_URL = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
-    _LIST_URL = "https://push2.eastmoney.com/api/qt/clist/get"
+    # Eastmoney routes the same public clist service through several numbered
+    # hosts. Cloud/CI egress IPs are sometimes throttled on only one of them,
+    # so rotate across known-compatible HTTPS hosts before declaring failure.
+    _LIST_URLS = (
+        "https://push2.eastmoney.com/api/qt/clist/get",
+        "https://82.push2.eastmoney.com/api/qt/clist/get",
+        "https://99.push2.eastmoney.com/api/qt/clist/get",
+        "https://80.push2.eastmoney.com/api/qt/clist/get",
+    )
 
     def __init__(self, timeout: float = 12.0, min_interval: float = 0.35):
         self.timeout = timeout
@@ -82,6 +90,18 @@ class EastmoneyProvider(MarketDataProvider):
         except Exception as exc:
             raise MarketDataError(f"Eastmoney request failed: {exc}") from exc
 
+    def _get_json_any(self, urls: tuple[str, ...], params: dict[str, Any]) -> dict[str, Any]:
+        errors: list[str] = []
+        for url in urls:
+            try:
+                payload = self._get_json(url, params)
+                if payload.get("data") is None:
+                    raise MarketDataError("Eastmoney returned data=null")
+                return payload
+            except Exception as exc:
+                errors.append(f"{url.split('/')[2]}: {exc}")
+        raise MarketDataError("Eastmoney host rotation exhausted: " + " | ".join(errors))
+
     def stock_list(self) -> pd.DataFrame:
         # Eastmoney currently caps clist/get responses well below arbitrarily
         # large `pz` values (the live CI observed 100 rows for pz=10000).
@@ -106,7 +126,7 @@ class EastmoneyProvider(MarketDataProvider):
         expected_total: int | None = None
         for page in range(1, max_pages + 1):
             params = {**base_params, "pn": str(page)}
-            payload = self._get_json(self._LIST_URL, params)
+            payload = self._get_json_any(self._LIST_URLS, params)
             data = payload.get("data") or {}
             page_rows = data.get("diff") or []
             if expected_total is None:
