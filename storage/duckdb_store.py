@@ -18,6 +18,12 @@ class DuckDBStore:
     def __init__(self, path: str | Path = "market.duckdb"):
         self.path = str(path)
 
+    @staticmethod
+    def _utcnow_naive() -> pd.Timestamp:
+        # DuckDB tables intentionally store UTC wall time without timezone.
+        # Timestamp.utcnow() is deprecated in pandas 3/4; normalize explicitly.
+        return pd.Timestamp.now(tz="UTC").tz_localize(None)
+
     def _connect(self):
         try:
             import duckdb
@@ -88,7 +94,7 @@ class DuckDBStore:
         temp = stocks.copy()
         temp["code"] = temp["code"].astype(str).str.zfill(6)
         temp["provider"] = provider
-        temp["updated_at"] = pd.Timestamp.utcnow().tz_localize(None)
+        temp["updated_at"] = self._utcnow_naive()
         with self._connect() as con:
             con.register("temp_stocks", temp)
             con.execute("CREATE OR REPLACE TABLE stock_universe AS SELECT * FROM temp_stocks")
@@ -110,7 +116,7 @@ class DuckDBStore:
         if not row or row[0] is None:
             return None
         updated = pd.Timestamp(row[0])
-        now = pd.Timestamp.utcnow().tz_localize(None)
+        now = self._utcnow_naive()
         return max(0.0, float((now - updated).total_seconds() / 3600.0))
 
     def save_history(self, code: str, interval: str, df: pd.DataFrame, adjust: str = "qfq") -> None:
@@ -242,7 +248,7 @@ class DuckDBStore:
                 )
             con.execute(
                 "INSERT INTO history_coverage (code, interval, adjust, covered_start, covered_end, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-                [code, interval, adjust, start_ts, end_ts, pd.Timestamp.utcnow().tz_localize(None)],
+                [code, interval, adjust, start_ts, end_ts, self._utcnow_naive()],
             )
 
     def coverage_bounds(self, code: str, interval: str, adjust: str = "qfq") -> tuple[pd.Timestamp | None, pd.Timestamp | None]:
@@ -263,7 +269,7 @@ class DuckDBStore:
         if scores is None or scores.empty:
             return
         temp = scores.copy()
-        temp["scored_at"] = pd.Timestamp.utcnow().tz_localize(None)
+        temp["scored_at"] = self._utcnow_naive()
         with self._connect() as con:
             con.register("temp_scores", temp)
             con.execute("CREATE OR REPLACE TABLE t_scores AS SELECT * FROM temp_scores")
