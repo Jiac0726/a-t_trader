@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import tempfile
 from pathlib import Path
 
@@ -68,7 +69,6 @@ def duckdb_probe(path: str):
             return "history + security-snapshot write/read roundtrip OK", {"history_rows": len(out), "snapshot_rows": len(snap_out)}
         finally:
             try:
-                import os
                 os.close(fd)
             except OSError:
                 pass
@@ -79,13 +79,7 @@ def duckdb_probe(path: str):
 
 
 def bse_migration_probe(mapping_provider=None, history_provider=None) -> CheckResult:
-    """Informational live probe for the future BSE stitched-history path.
-
-    This is deliberately WARN-only on failure. The migration-aware provider is
-    not placed on the production chain until a connected runner proves that the
-    selected upstream returns both legacy-code pre-switch bars and current-920
-    post-switch bars.
-    """
+    """Informational live probe for the future BSE stitched-history path."""
     mapping_provider = mapping_provider or BseCodeMappingProvider()
     history_provider = history_provider or TencentHistoryProvider()
     try:
@@ -128,20 +122,24 @@ def bse_migration_probe(mapping_provider=None, history_provider=None) -> CheckRe
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="v0.2 联网合并前端到端验收")
-    parser.add_argument("--provider", choices=["auto", "eastmoney", "akshare"], default="auto")
+    parser.add_argument("--provider", choices=["auto", "eastmoney", "akshare", "tushare"], default="auto")
     parser.add_argument("--benchmark-provider", choices=["auto", "eastmoney", "akshare"], default="auto")
     parser.add_argument("--benchmark", choices=sorted(BENCHMARKS), default="csi300")
     parser.add_argument("--reference-etf", choices=[""] + sorted(ETFS), default="csi300_etf_sh")
-    # Explicitly include one native 920 BSE listing. This avoids wasting the
-    # merge gate on a broad candidate sweep while still making BSE history a
-    # hard, deterministic check. Migrated-code continuity remains a separate
-    # informational probe below.
-    parser.add_argument("--codes", default="600519,000001,300750,920002")
+    # Explicit representatives remain hard checks. BSE is intentionally not in
+    # this list because current-universe BSE history is validated separately as
+    # either a hard market probe or a visible WARN depending on source setup.
+    parser.add_argument("--codes", default="600519,000001,300750")
     parser.add_argument("--db", default="market.duckdb")
     parser.add_argument("--with-baostock", action="store_true")
     parser.add_argument("--skip-duckdb", action="store_true")
     parser.add_argument("--membership-overlap-floor", type=float, default=0.90)
-    parser.add_argument("--allow-missing-bj", action="store_true")
+    parser.add_argument("--allow-missing-bj", action="store_true", help="legacy escape hatch: relax BSE identity requirement as well")
+    parser.add_argument(
+        "--allow-missing-bj-history",
+        action="store_true",
+        help="keep BSE identity hard but downgrade long-window BSE daily history to WARN when no TUSHARE_TOKEN is configured",
+    )
     parser.add_argument("--json-out", default="output/live_validation.json")
     args = parser.parse_args()
 
@@ -149,11 +147,6 @@ def main() -> None:
     reference = make_benchmark_provider(args.benchmark_provider)
     master = None
     if args.with_baostock:
-        # Separate identity from price and separate the SH/SZ and BSE failure
-        # domains. BaoStock is first for SH/SZ bars, Tencent is directly second
-        # for current BSE 920xxx bars, and the composite universe supplies
-        # BaoStock SH/SZ identity + BSE official identity. The generic public
-        # chain remains a final fallback rather than delaying every BSE probe.
         raw = BaostockSecurityMasterProvider()
         master = CachedSecurityMasterProvider(raw, DuckDBSecuritySnapshotStore(args.db))
         universe = BaostockBseUniverseProvider(master)
@@ -164,6 +157,16 @@ def main() -> None:
             market,
         ])
         reference = BenchmarkProviderChain([BaostockBenchmarkProvider(), reference])
+
+    identity_markets = ("SH", "SZ") if args.allow_missing_bj else ("SH", "SZ", "BJ")
+    token_backed_bj = bool(os.getenv("TUSHARE_TOKEN", "").strip())
+    if args.allow_missing_bj_history and not token_backed_bj and "BJ" in identity_markets:
+        daily_required_markets = tuple(m for m in identity_markets if m != "BJ")
+        daily_warning_markets = ("BJ",)
+    else:
+        daily_required_markets = identity_markets
+        daily_warning_markets = ()
+
     report = run_live_validation(
         market,
         reference,
@@ -172,7 +175,9 @@ def main() -> None:
         representative_codes=tuple(x.strip().zfill(6) for x in args.codes.split(",") if x.strip()),
         security_master_provider=master,
         persistence_probe=None if args.skip_duckdb else duckdb_probe(args.db),
-        require_markets=("SH", "SZ") if args.allow_missing_bj else ("SH", "SZ", "BJ"),
+        require_markets=identity_markets,
+        daily_required_markets=daily_required_markets,
+        daily_warning_markets=daily_warning_markets,
         membership_overlap_floor=args.membership_overlap_floor,
     )
     if args.with_baostock:
