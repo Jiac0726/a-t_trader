@@ -13,6 +13,7 @@ from providers.eastmoney import EastmoneyProvider
 from providers.health import check_provider_health
 from providers.official_universe import OfficialExchangeUniverseProvider
 from providers.retrying import RetryingProvider
+from providers.tencent_history import TencentHistoryProvider
 from scanner.market_scanner import scan_codes, select_universe
 from storage.duckdb_store import DuckDBStore
 
@@ -29,9 +30,10 @@ def make_raw_provider(name: str):
     if name == "akshare":
         return AkshareProvider()
     if name == "auto":
-        # Keep price hydration lean: this raw factory is used by concurrent
-        # history downloads, so identity-only exchange providers are excluded.
-        return ProviderChain([EastmoneyProvider(), AkshareProvider()])
+        # This factory is used by concurrent history hydration, so keep only
+        # price-capable providers here. Tencent is an independent fallback and
+        # is especially important for current BSE 920xxx symbols.
+        return ProviderChain([EastmoneyProvider(), AkshareProvider(), TencentHistoryProvider()])
     raise ValueError(name)
 
 
@@ -48,9 +50,10 @@ def make_provider(name: str, retries: int = 2):
             [
                 RetryingProvider(EastmoneyProvider(), attempts=attempts),
                 RetryingProvider(AkshareProvider(), attempts=attempts),
-                # Current security identity is independent from quote/K-line
-                # availability. Official SSE/SZSE/BSE sources are the final
-                # stock-list fallback when public quote endpoints are blocked.
+                RetryingProvider(TencentHistoryProvider(), attempts=attempts),
+                # Security identity remains independent from K-line sources.
+                # This official provider is the final no-token current-list
+                # fallback when quote endpoints are unavailable.
                 OfficialExchangeUniverseProvider(),
             ]
         )
