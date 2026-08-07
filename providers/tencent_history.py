@@ -16,6 +16,11 @@ class TencentHistoryProvider(MarketDataProvider):
     to the `bj` namespace. Legacy routing exists for historical continuity
     probes only; old codes are never used to build the current stock universe.
 
+    Tencent may return a single stale/current bar for BSE symbols even when a
+    long historical window was requested. Such a payload is not accepted as
+    historical coverage: it is raised as ``NoMarketData`` so a provider chain
+    can continue to a genuinely historical source.
+
     Tencent's K-line payload exposes OHLCV but not a trustworthy historical
     turnover amount field in the same schema. We therefore keep a required
     `amount` column as an explicitly estimated value (volume in lots × 100 ×
@@ -125,7 +130,8 @@ class TencentHistoryProvider(MarketDataProvider):
 
     def history(self, code, start, end, interval="1d", adjust="qfq") -> pd.DataFrame:
         symbol = self._symbol(code)
-        raw = self._daily(symbol, start, end, adjust) if interval in {"1d", "day"} else self._minute(symbol, interval)
+        is_daily = interval in {"1d", "day"}
+        raw = self._daily(symbol, start, end, adjust) if is_daily else self._minute(symbol, interval)
         if raw.empty:
             raise NoMarketData(f"Tencent returned no parseable rows for {symbol}")
         raw["datetime"] = pd.to_datetime(raw["datetime"], errors="coerce")
@@ -134,6 +140,14 @@ class TencentHistoryProvider(MarketDataProvider):
         raw = raw.dropna(subset=["datetime", "open", "high", "low", "close"]).sort_values("datetime").reset_index(drop=True)
         if raw.empty:
             raise NoMarketData(f"Tencent rows were not parseable for {symbol}")
+
+        if is_daily and symbol.startswith("bj"):
+            requested_days = max(0, (pd.Timestamp(end).normalize() - pd.Timestamp(start).normalize()).days)
+            if requested_days >= 10 and len(raw) < 5:
+                raise NoMarketData(
+                    f"Tencent BSE daily response is suspiciously short for {symbol}: rows={len(raw)}, requested_days={requested_days}"
+                )
+
         raw["amount"] = self._estimate_amount(raw)
         raw.attrs.update(
             {
