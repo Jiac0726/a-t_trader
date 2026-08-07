@@ -10,6 +10,9 @@ import pandas as pd
 from app.cli import make_provider
 from data.cached_security_master import CachedSecurityMasterProvider
 from providers.baostock_master import BaostockSecurityMasterProvider
+from providers.baostock_daily import BaostockDailyProvider
+from providers.chain import ProviderChain
+from providers.retrying import RetryingProvider
 from providers.benchmark import ETFS, BENCHMARKS, make_benchmark_provider
 from storage.duckdb_store import DuckDBStore
 from storage.security_snapshot_store import DuckDBSecuritySnapshotStore
@@ -90,6 +93,10 @@ def main() -> None:
     reference = make_benchmark_provider(args.benchmark_provider)
     master = None
     if args.with_baostock:
+        # BaoStock is an independent daily-K fallback. Keep minute data on the
+        # existing providers and preserve the leaf provider name through the
+        # nested chain for diagnostics.
+        market = ProviderChain([market, RetryingProvider(BaostockDailyProvider(), attempts=2)])
         raw = BaostockSecurityMasterProvider()
         master = CachedSecurityMasterProvider(raw, DuckDBSecuritySnapshotStore(args.db))
     report = run_live_validation(
