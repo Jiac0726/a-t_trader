@@ -9,6 +9,7 @@ import pandas as pd
 from .base import MarketDataError, NoMarketData
 from .demo import DemoProvider
 from .eastmoney import EastmoneyProvider
+from .baostock_daily import BaostockHistoryProvider
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +56,23 @@ ETFS: dict[str, BenchmarkSpec] = {
 }
 
 REFERENCE_ASSETS: dict[str, BenchmarkSpec] = {**BENCHMARKS, **ETFS}
+
+
+BAOSTOCK_REFERENCE_CODES: dict[str, str] = {
+    "sse": "sh.000001",
+    "csi300": "sh.000300",
+    "csi500": "sh.000905",
+    "csi1000": "sh.000852",
+    "szse": "sz.399001",
+    "chinext": "sz.399006",
+    "star50": "sh.000688",
+    "sse50_etf": "sh.510050",
+    "csi300_etf_sh": "sh.510300",
+    "csi300_etf_sz": "sz.159919",
+    "csi500_etf": "sh.510500",
+    "chinext_etf": "sz.159915",
+    "star50_etf": "sh.588000",
+}
 
 
 def resolve_reference_asset(value: str) -> BenchmarkSpec:
@@ -258,6 +276,40 @@ class AkshareBenchmarkProvider:
         except Exception as exc:
             raise MarketDataError(f"AKShare {spec.kind} request failed for {spec.key}: {exc}") from exc
         return _normalize_history(raw, spec, self.name)
+
+
+class BaostockBenchmarkProvider:
+    """Independent BaoStock daily reference fallback for indices and ETFs."""
+
+    name = "baostock-reference"
+
+    def __init__(self, client=None):
+        self.client = client or BaostockHistoryProvider()
+
+    def history(
+        self,
+        benchmark: str,
+        start: date | str,
+        end: date | str,
+        interval: str = "1d",
+        adjust: str = "qfq",
+    ) -> pd.DataFrame:
+        spec = resolve_reference_asset(benchmark)
+        if interval not in {"1d", "day"}:
+            raise NoMarketData("BaoStock reference fallback is daily-only; index minute data is not claimed")
+        source_code = BAOSTOCK_REFERENCE_CODES.get(spec.key)
+        if not source_code:
+            raise NoMarketData(f"No explicit BaoStock source code registered for {spec.key}")
+        raw = self.client._query_source_code(
+            source_code,
+            start,
+            end,
+            interval="1d",
+            adjust="none" if spec.kind == "index" else adjust,
+        )
+        out = _normalize_history(raw, spec, self.name)
+        out.attrs["baostock_code"] = source_code
+        return out
 
 
 class DemoBenchmarkProvider:
