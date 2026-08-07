@@ -32,7 +32,7 @@ def _parse_codes(value: str) -> list[str]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="多股票横截面 T Score OOS 校准")
+    parser = argparse.ArgumentParser(description="多股票横截面 T Score 探索性 OOS 校准（正式晋级请使用 research_oos_cli）")
     parser.add_argument("--codes", default="300059,601899,601138,000063,300750,300308")
     parser.add_argument("--provider", choices=["auto", "eastmoney", "akshare", "demo"], default="demo")
     parser.add_argument("--days", type=int, default=500)
@@ -49,7 +49,7 @@ def main() -> None:
     parser.add_argument("--no-cache", action="store_true")
     parser.add_argument("--regime-benchmark", choices=[""] + sorted(REFERENCE_ASSETS), default="", help="preferred explicit broad-market index/ETF reference for causal regime labels")
     parser.add_argument("--regime-code", default="", help="legacy stock/proxy code for regime labels; prefer --regime-benchmark")
-    parser.add_argument("--security-master", choices=["none", "baostock-lifecycle", "baostock-snapshot"], default="none", help="optional point-in-time universe filter before cross-sectional calibration")
+    parser.add_argument("--security-master", choices=["none", "baostock-lifecycle", "baostock-snapshot"], default="none", help="optional point-in-time universe filter before exploratory calibration")
     args = parser.parse_args()
 
     raw = make_provider(args.provider)
@@ -60,7 +60,9 @@ def main() -> None:
     for code in _parse_codes(args.codes):
         try:
             daily = validate_ohlcv(provider.history(code, start, end, interval="1d", adjust="qfq"))
-            intraday = validate_ohlcv(provider.history(code, start, end, interval="5m", adjust="qfq"))
+            # T transaction costs depend on the historical nominal price level.
+            # Never use qfq intraday prices for fixed minimum commission/share P&L.
+            intraday = validate_ohlcv(provider.history(code, start, end, interval="5m", adjust="none"))
             scores = build_score_history(code, daily, lookback=args.lookback, name=daily.attrs.get("name", ""), provider=daily.attrs.get("provider", provider.name))
             opp = build_opportunity_history(intraday, mode=args.mode, costs=CostModel())
             frames[code] = attach_forward_labels(scores, opp, horizon=args.horizon)
@@ -126,9 +128,9 @@ def main() -> None:
     print(metrics.to_string(index=False) if not metrics.empty else "Not enough dates")
     print("\nTraining-fold weights:")
     print(weights.to_string(index=False) if not weights.empty else "Not enough dates")
-    print("\nCross-sectional promotion gate:")
+    print("\nExploratory promotion diagnostic (NOT authorization to promote weights):")
     print(assess_cross_sectional_promotion_gate(metrics))
-    print("\nWarning: real historical calibration must use a point-in-time universe; using only today's surviving stocks can create survivorship bias.")
+    print("\nWARNING: this direct-fetch CLI is exploratory and does not enforce the dataset lineage quality gate. Formal v0.2 promotion must use app.research_oos_cli on an oos_eligible_panel produced with exact point-in-time snapshots.")
 
 
 if __name__ == "__main__":
