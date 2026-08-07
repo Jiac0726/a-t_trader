@@ -98,6 +98,46 @@ def test_live_validation_requires_bj_by_default_but_can_relax():
     assert relaxed.ok
 
 
+def test_bj_history_can_warn_without_relaxing_bj_identity():
+    class BjHistoryUnavailable(Market):
+        def history(self, code, start, end, interval="1d", adjust="qfq"):
+            code = str(code).zfill(6)
+            if interval == "1d" and code.isdigit() and int(code) < 3300 and int(code) % 3 == 2:
+                raise RuntimeError("BSE history source unavailable")
+            return super().history(code, start, end, interval=interval, adjust=adjust)
+
+    report = run_live_validation(
+        BjHistoryUnavailable(),
+        Bench(),
+        daily_required_markets=("SH", "SZ"),
+        daily_warning_markets=("BJ",),
+        end=date(2026, 2, 1),
+    )
+    assert report.ok
+    universe = next(x for x in report.checks if x.name == "market_universe")
+    bj = next(x for x in report.checks if x.name == "daily_market_BJ")
+    assert universe.status == "PASS"
+    assert universe.data["markets"]["BJ"] > 0
+    assert bj.status == "WARN"
+
+
+def test_intraday_live_validation_uses_unadjusted_prices():
+    class RecordingMarket(Market):
+        def __init__(self):
+            self.calls = []
+
+        def history(self, code, start, end, interval="1d", adjust="qfq"):
+            self.calls.append((str(code).zfill(6), interval, adjust))
+            return super().history(code, start, end, interval=interval, adjust=adjust)
+
+    market = RecordingMarket()
+    report = run_live_validation(market, Bench(), end=date(2026, 2, 1))
+    assert report.ok
+    assert any(interval == "5m" and adjust == "none" for _, interval, adjust in market.calls)
+    intraday = next(x for x in report.checks if x.name == "intraday_5m")
+    assert intraday.data["adjust"] == "none"
+
+
 def test_live_validation_fails_low_shsz_membership_overlap():
     class ThinMaster(Master):
         def snapshot(self, day):
