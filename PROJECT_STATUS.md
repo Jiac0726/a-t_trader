@@ -69,10 +69,15 @@
 - [x] 高波动“历史分位 + 绝对波动下限”双阈值
 - [x] 市场状态防未来数据污染测试
 - [x] 横截面按市场状态拆分 IC / Top-Bottom 诊断
+- [x] 显式宽基指数/ETF参考资产 Provider（不再按六码猜证券类型）
+- [x] 中证指数 Eastmoney 多 secid 候选与实际命中记录
+- [x] Demo 宽基/ETF离线 Provider，避免 demo 模式误走公网
+- [x] 联网合并前验收器：沪深北市场覆盖、日K/5分钟、指数、ETF、点时名单重合、DuckDB临时读写
+- [x] 联网验收 JSON 报告与独立研究文档
 
 ## 当前验证
 
-- pytest：60/60 通过
+- pytest：65/65 通过
 - Python compileall：通过
 - Demo 全市场扫描：通过
 - 500天 Demo 固定校准：约 1.3 秒（当前容器）
@@ -85,17 +90,19 @@
 
 ## 下一阶段
 
-- [ ] 真实东财股票池接口回归并校验沪深北数量
-- [ ] DuckDB 真机回归与 schema migration
+- [ ] 在联网开发机执行 `app.live_validate_cli`，真实东财/AKShare股票池回归并校验沪深北数量
+- [ ] DuckDB 真机回归与 schema migration（验收器已提供临时库读写探针）
 - [x] 多股票横截面 OOS 校准框架（真实市场验证仍待完成）
 - [x] 点时（point-in-time）历史股票池框架：BaoStock历史快照 + 生命周期 fallback + DuckDB 快照缓存（真实覆盖仍待真机回归）
-- [x] 市场状态分层诊断框架（真实宽基指数 OOS 验证仍待完成）
+- [x] 市场状态分层诊断框架 + 显式宽基指数/ETF数据路径（真实联网 OOS 验证仍待完成）
 - [ ] 只有真实多股票 OOS 晋级门槛通过后，才生成 T Score v0.2 正式权重
 
 ## v0.2 Stage 11
 
-- [x] 显式宽基指数 Provider
-- [x] 东财指数直连 + AKShare 指数备用源
-- [x] 市场状态 CLI 默认使用 benchmark key
-- [x] 联网 live validation suite 与 JSON 验收报告
-- [x] pytest：60/60 通过
+- [x] 显式宽基指数/ETF Provider
+- [x] 中证指数多 secid 候选 + 东财直连 / AKShare fallback
+- [x] Demo 宽基/ETF 完全离线验证路径
+- [x] 市场状态 CLI 默认使用显式 reference asset key
+- [x] 联网 live validation suite：SH/SZ/BJ + 日K/5分钟 + 指数/ETF + 点时名单重合 + 临时 DuckDB
+- [x] JSON 验收报告与非零失败退出码
+- [x] pytest：65/65 通过
