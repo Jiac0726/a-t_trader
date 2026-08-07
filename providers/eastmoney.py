@@ -26,6 +26,9 @@ class EastmoneyProvider(MarketDataProvider):
         "https://33.push2his.eastmoney.com/api/qt/stock/kline/get",
         "https://63.push2his.eastmoney.com/api/qt/stock/kline/get",
     )
+    # Backward-compatible primary URL for the benchmark adapter. Individual
+    # stock history uses _HISTORY_URLS via _get_history_json.
+    _HISTORY_URL = _HISTORY_URLS[0]
     # Eastmoney routes the same public clist service through several numbered
     # hosts. Cloud/CI egress IPs are sometimes throttled on only one of them,
     # so rotate across known-compatible HTTPS hosts before declaring failure.
@@ -143,10 +146,6 @@ class EastmoneyProvider(MarketDataProvider):
         raise MarketDataError("Eastmoney history host rotation exhausted: " + " | ".join(errors))
 
     def stock_list(self) -> pd.DataFrame:
-        # Eastmoney currently caps clist/get responses well below arbitrarily
-        # large `pz` values (the live CI observed 100 rows for pz=10000).
-        # Fetch deterministic pages instead of assuming one oversized request
-        # can represent the whole market.
         page_size = 100
         max_pages = 100
         base_params: dict[str, Any] = {
@@ -156,8 +155,6 @@ class EastmoneyProvider(MarketDataProvider):
             "ut": "bd1d9ddb04089700cf9c27f6f7426281",
             "fltt": "2",
             "invt": "2",
-            # Code ordering is materially more stable across pages than a
-            # rapidly changing percentage-change ranking.
             "fid": "f12",
             "fs": "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048",
             "fields": "f12,f14,f13,f2,f3,f5,f6,f8,f15,f16",
