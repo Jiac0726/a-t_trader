@@ -15,7 +15,7 @@ from features.daily import daily_features
 from features.intraday import intraday_opportunity_features
 from presentation.ranking import enrich_t_ranking
 from providers.health import check_provider_health
-from scanner.market_scanner import scan_codes, select_universe
+from scanner.market_scanner import scan_codes, select_rankable_universe
 from scoring.t_score import build_t_score
 from storage.duckdb_store import DuckDBStore
 
@@ -147,7 +147,7 @@ with tab_rank:
                 except Exception as exc:
                     st.error(str(exc))
     else:
-        st.caption("全市场模式先做日线粗筛，不会给5000多只股票全部下载分钟数据。建议先扫描100~300只高流动性候选。")
+        st.caption("全市场模式先做日线粗筛，不会给5000多只股票全部下载分钟数据。优先使用当前成交额做流动性预筛；若当前身份源没有成交额，则只允许复用已有历史评分缓存，不会按代码顺序随便截前N只。")
         c1, c2, c3 = st.columns(3)
         limit = c1.number_input("本轮最多扫描", min_value=20, max_value=6000, value=100, step=20)
         min_amount_yi = c2.number_input("实时成交额预筛(亿，0=关闭)", min_value=0.0, value=0.0, step=1.0)
@@ -162,12 +162,18 @@ with tab_rank:
                     provider, store = provider_and_store()
                     if refresh_universe and isinstance(provider, CachedProvider):
                         provider.refresh_stock_list()
-                    candidates = select_universe(
+                    candidates = select_rankable_universe(
                         provider,
+                        store=store,
                         limit=int(limit),
                         exclude_st=exclude_st,
                         min_spot_amount=float(min_amount_yi) * 1e8,
                     )
+                    basis = candidates.attrs.get("selection_basis", "")
+                    if basis == "current_amount":
+                        st.caption("粗筛依据：当前成交额 / 流动性")
+                    elif basis == "cached_t_score":
+                        st.caption("粗筛依据：本地上一次有效 T Score 缓存（当前股票池源不含实时成交额）")
                     codes = candidates["code"].tolist() if not candidates.empty else []
                     if codes and store is not None and workers > 1:
                         end = date.today()
