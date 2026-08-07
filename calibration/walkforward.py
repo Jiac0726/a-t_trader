@@ -18,7 +18,7 @@ class WalkForwardFold:
     test_start: int
     test_end: int
 
-    def to_dict(self) -> dict:
+    def to_dict(self):
         return asdict(self)
 
 
@@ -28,12 +28,7 @@ def expanding_walk_forward(
     test_size: int,
     gap: int = 0,
 ) -> list[WalkForwardFold]:
-    """Expanding-window time-series splits with an explicit pre-test gap.
-
-    Semantics mirror mature time-series CV practice: every train observation is
-    earlier than every test observation; the gap can purge rows whose labels
-    overlap the test horizon. No shuffling is ever performed.
-    """
+    """Expanding-window time-series splits with an explicit pre-test gap."""
     n_samples = int(n_samples)
     min_train_size = int(min_train_size)
     test_size = int(test_size)
@@ -63,6 +58,38 @@ def expanding_walk_forward(
     return folds
 
 
+def _lineage_values(window: pd.DataFrame, column: str, default: str) -> list[str]:
+    if column not in window.columns:
+        return [default]
+    values = window[column].dropna().astype(str).str.strip()
+    values = values[values != ""]
+    return sorted(values.unique().tolist()) or [default]
+
+
+def _lineage_summary(window: pd.DataFrame) -> dict:
+    """Summarize the exact trailing bars used by one historical T Score row."""
+    providers = _lineage_values(window, "provider", "unknown")
+    qualities = _lineage_values(window, "amount_quality", "unknown")
+    adjusts = _lineage_values(window, "adjust", "unknown")
+    source_codes = _lineage_values(window, "source_code", "unknown")
+    if "bse_code_stitched" in window.columns:
+        stitched = bool(window["bse_code_stitched"].fillna(False).astype(bool).any())
+    else:
+        stitched = False
+    estimated = any("estimated" in value.lower() for value in qualities)
+    unknown = any(value.lower() in {"unknown", "legacy-unknown"} for value in [*providers, *qualities])
+    return {
+        "lineage_adjust": "|".join(adjusts),
+        "lineage_providers": "|".join(providers),
+        "lineage_provider_count": len(providers),
+        "lineage_amount_quality": "|".join(qualities),
+        "lineage_source_codes": "|".join(source_codes),
+        "lineage_bse_stitched": stitched,
+        "lineage_has_estimated_amount": estimated,
+        "lineage_has_unknown": unknown,
+    }
+
+
 def build_score_history(
     code: str,
     daily_df: pd.DataFrame,
@@ -73,7 +100,8 @@ def build_score_history(
     """Recompute T Score as it would have been known at each historical date.
 
     For date D, only daily bars at or before D are passed into the feature layer.
-    This deliberately trades speed for a transparent no-look-ahead baseline.
+    Lineage is summarized from the same trailing lookback bars used by the score,
+    so downstream OOS filters can exclude estimated/unknown/mixed-source windows.
     """
     x = daily_df.copy().sort_values("datetime").reset_index(drop=True)
     x["datetime"] = pd.to_datetime(x["datetime"])
@@ -83,10 +111,12 @@ def build_score_history(
     rows: list[dict] = []
     for end_i in range(lookback - 1, len(x)):
         history = x.iloc[: end_i + 1]
+        window = history.tail(lookback)
         features = daily_features(history, lookback=lookback)
         result = build_t_score(code, name, features, provider=provider)
         row = result.to_dict()
         row["date"] = x.iloc[end_i]["datetime"].normalize()
+        row.update(_lineage_summary(window))
         rows.append(row)
     return pd.DataFrame(rows).sort_values("date").reset_index(drop=True)
 
@@ -148,7 +178,6 @@ def attach_forward_labels(
     labels: list[float] = []
     counts: list[int] = []
     for score_date in scores["date"]:
-        # side='right' is the leakage guard: same-day opportunity is never a label.
         start = int(np.searchsorted(opp_dates, np.datetime64(score_date), side="right"))
         future = opp_values[start : start + horizon]
         future = future[np.isfinite(future)]
@@ -205,11 +234,7 @@ def evaluate_score_walk_forward(
     score_col: str = "score",
     label_col: str = "forward_opportunity_pct",
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Evaluate a fixed T Score out-of-sample over chronological test folds.
-
-    This stage does not optimize weights yet. It answers a prerequisite question:
-    does the current score rank future realized opportunity at all, out of sample?
-    """
+    """Evaluate a fixed T Score out-of-sample over chronological test folds."""
     x = labeled.copy().sort_values("date").dropna(subset=[score_col, label_col]).reset_index(drop=True)
     folds = expanding_walk_forward(len(x), min_train_size=min_train_size, test_size=test_size, gap=gap)
     rows: list[dict] = []
