@@ -60,10 +60,15 @@
 - [x] 横截面训练折权重优化 + 外层未来日期 OOS
 - [x] 横截面随机零假设与专属晋级门槛
 - [x] 横截面候选搜索 NumPy 快速内核
+- [x] 独立 SecurityMasterProvider 接口
+- [x] BaoStock 可选点时证券主表：query_all_stock / query_stock_basic / query_trade_dates
+- [x] 历史交易日快照批量读取与 DuckDB 快照缓存
+- [x] 横截面 CLI exact-snapshot / lifecycle 两级过滤
+- [x] 未来 IPO、退市后、停牌、指数/ETF/B股过滤回归测试
 
 ## 当前验证
 
-- pytest：37/37 通过
+- pytest：48/48 通过
 - Python compileall：通过
 - Demo 全市场扫描：通过
 - 500天 Demo 固定校准：约 1.3 秒（当前容器）
@@ -76,13 +81,14 @@
 
 当前构建环境无法稳定完成真实公开行情接口与真实 DuckDB 驱动回归，因此 PR 继续保持 Draft。缓存、并发、回测、校准控制逻辑均已有离线测试；上线或合并 v0.2 前仍必须在联网开发机上完成真实沪深北股票池、历史日K/5分钟K、DuckDB 持久化的端到端回归。
 
-真实历史横截面校准还需要 point-in-time 股票池，不能只使用当前仍存续的股票回看过去，否则会产生幸存者偏差。
+点时股票池框架已实现，但 BaoStock 沪深北真实历史覆盖、北交所生命周期元数据和 DuckDB 真机持久化仍未在当前环境完成，因此幸存者偏差门槛尚不能视为“数据验证完成”。
 
 ## 下一阶段
 
 - [ ] 真实东财股票池接口回归并校验沪深北数量
 - [ ] DuckDB 真机回归与 schema migration
 - [x] 多股票横截面 OOS 校准框架（真实市场验证仍待完成）
-- [ ] 点时（point-in-time）历史股票池，消除当前存续股票回看造成的幸存者偏差
+- [x] 点时（point-in-time）历史股票池框架：BaoStock历史快照 + 生命周期 fallback + DuckDB 快照缓存（真实覆盖仍待真机回归）
+- [ ] 用第二独立证券主表交叉抽样点时股票池
 - [ ] 市场状态分层（震荡/趋势/高波动）后分别验证 T Score
 - [ ] 只有真实多股票 OOS 晋级门槛通过后，才生成 T Score v0.2 正式权重
