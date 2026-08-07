@@ -17,3 +17,22 @@ def test_eastmoney_rotates_list_hosts(monkeypatch):
     payload = provider._get_json_any(provider._LIST_URLS, {"pn": "1"})
     assert payload["data"]["total"] == 1
     assert calls[:3] == list(provider._LIST_URLS[:3])
+
+
+def test_eastmoney_sticks_to_successful_list_host(monkeypatch):
+    provider = EastmoneyProvider(min_interval=0)
+    calls = []
+
+    def fake(url, params):
+        calls.append(url)
+        if url != provider._LIST_URLS[2]:
+            raise RuntimeError("blocked")
+        return {"data": {"total": 1, "diff": [{"f12": "600000", "f14": "x"}]}}
+
+    monkeypatch.setattr(provider, "_get_json", fake)
+    provider._get_json_any(provider._LIST_URLS, {"pn": "1"})
+    first_calls = list(calls)
+    calls.clear()
+    provider._get_json_any(provider._LIST_URLS, {"pn": "2"})
+    assert first_calls[:3] == list(provider._LIST_URLS[:3])
+    assert calls == [provider._LIST_URLS[2]]
