@@ -15,10 +15,11 @@ class CachedProvider(MarketDataProvider):
     upstream data source.
     """
 
-    def __init__(self, provider: MarketDataProvider, store: DuckDBStore):
+    def __init__(self, provider: MarketDataProvider, store: DuckDBStore, universe_ttl_hours: float = 6.0):
         self.provider = provider
         self.store = store
         self.name = f"cached:{provider.name}"
+        self.universe_ttl_hours = max(0.0, float(universe_ttl_hours))
 
     @staticmethod
     def _day(value: date | str | pd.Timestamp) -> pd.Timestamp:
@@ -26,11 +27,15 @@ class CachedProvider(MarketDataProvider):
 
     def stock_list(self) -> pd.DataFrame:
         cached = self.store.load_stock_list()
-        if not cached.empty:
+        age_fn = getattr(self.store, "stock_list_age_hours", None)
+        age_hours = age_fn() if callable(age_fn) else None
+        cache_fresh = (
+            not cached.empty
+            and (age_hours is None or age_hours <= self.universe_ttl_hours)
+        )
+        if cache_fresh:
             return cached
-        stocks = self.provider.stock_list()
-        self.store.save_stock_list(stocks, provider=stocks.attrs.get("provider", self.provider.name))
-        return self.store.load_stock_list()
+        return self.refresh_stock_list()
 
     def refresh_stock_list(self) -> pd.DataFrame:
         stocks = self.provider.stock_list()

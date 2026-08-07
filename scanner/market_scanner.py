@@ -62,12 +62,11 @@ def scan_codes(
     return out
 
 
-def scan_universe(
+def select_universe(
     provider: MarketDataProvider,
     limit: int | None = None,
     exclude_st: bool = True,
     min_spot_amount: float = 0.0,
-    **scan_kwargs,
 ) -> pd.DataFrame:
     stocks = provider.stock_list().copy()
     if stocks.empty:
@@ -81,4 +80,22 @@ def scan_universe(
         stocks = stocks.sort_values("amount", ascending=False, na_position="last")
     if limit:
         stocks = stocks.head(limit)
+    return stocks.reset_index(drop=True)
+
+
+def scan_universe(
+    provider: MarketDataProvider,
+    limit: int | None = None,
+    exclude_st: bool = True,
+    min_spot_amount: float = 0.0,
+    **scan_kwargs,
+) -> pd.DataFrame:
+    stocks = select_universe(
+        provider,
+        limit=limit,
+        exclude_st=exclude_st,
+        min_spot_amount=min_spot_amount,
+    )
+    if stocks.empty:
+        return pd.DataFrame()
     return scan_codes(stocks["code"].tolist(), provider, **scan_kwargs)

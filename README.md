@@ -125,4 +125,27 @@ python -m app.cli --provider auto --all --limit 100 --min-spot-amount 500000000
 python -m app.cli --provider auto --all --limit 100 --refresh-universe
 ```
 
-首次全市场历史灌库仍需要进一步做批量/并发优化，因此当前建议先使用 `--limit 50~200` 验证。后续再次运行时，`CachedProvider` 只补本地缺失日期，不会重复下载完整历史区间。
+首次全市场历史灌库已经支持受控并发；仍建议先使用 `--limit 50~200` 验证上游接口稳定性。后续再次运行时，`CachedProvider` 只补本地缺失日期，不会重复下载完整历史区间。
+
+## v0.2 并发灌库与健康检查
+
+全市场候选首次建立历史缓存时，可使用受控并发。网络请求并发执行，但 DuckDB 写入保持串行，避免多写者冲突：
+
+```bash
+python -m app.cli --provider auto --all --limit 200 --hydrate-workers 4 --hydrate-rps 4
+```
+
+参数说明：
+
+- `--hydrate-workers`：并发取数线程数，默认 4，内部上限 16。
+- `--hydrate-rps`：所有线程合计请求速率，默认每秒 4 次。
+- `--retries`：临时失败重试次数，默认 2 次，采用指数退避。
+- `--no-prehydrate`：关闭并发预灌库，退回逐只按需读取。
+
+检查当前数据源是否能正常返回股票池与日K：
+
+```bash
+python -m app.cli --provider auto --health
+```
+
+生产数据源的股票池还会做完整性保护：若返回数量异常偏小（当前阈值 3000），会视为上游分页/接口异常并触发备用源，而不是把残缺股票池当成完整市场继续运行。

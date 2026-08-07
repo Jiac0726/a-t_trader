@@ -57,6 +57,8 @@ class AkshareProvider(MarketDataProvider):
         out["market"] = out["code"].map(self._market)
         keep = [c for c in ["code", "name", "market", "latest", "pct_change", "volume", "amount", "turnover", "high", "low"] if c in out.columns]
         out = out[keep].drop_duplicates("code").sort_values("code").reset_index(drop=True)
+        if len(out) < 3000:
+            raise MarketDataError(f"AKShare A-share universe suspiciously small: {len(out)}")
         out.attrs["provider"] = self.name
         return out
 

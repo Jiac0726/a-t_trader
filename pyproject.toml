@@ -1,6 +1,6 @@
 [project]
 name = "a-t-trader"
-version = "0.1.0"
+version = "0.2.0"
 description = "A-share historical T-trading suitability analyzer"
 requires-python = ">=3.10"
 dependencies = [

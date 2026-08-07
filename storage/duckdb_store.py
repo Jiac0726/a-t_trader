@@ -40,6 +40,18 @@ class DuckDBStore:
             except Exception:
                 return pd.DataFrame()
 
+    def stock_list_age_hours(self) -> float | None:
+        with self._connect() as con:
+            try:
+                row = con.execute("SELECT max(updated_at) FROM stock_universe").fetchone()
+            except Exception:
+                return None
+        if not row or row[0] is None:
+            return None
+        updated = pd.Timestamp(row[0])
+        now = pd.Timestamp.utcnow().tz_localize(None)
+        return max(0.0, float((now - updated).total_seconds() / 3600.0))
+
     def save_history(self, code: str, interval: str, df: pd.DataFrame) -> None:
         if df is None or df.empty:
             return

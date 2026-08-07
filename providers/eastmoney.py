@@ -122,6 +122,8 @@ class EastmoneyProvider(MarketDataProvider):
         out = pd.DataFrame(rows).drop_duplicates("code").sort_values("code").reset_index(drop=True)
         if out.empty:
             raise MarketDataError("Eastmoney A-share universe could not be parsed")
+        if len(out) < 3000:
+            raise MarketDataError(f"Eastmoney A-share universe suspiciously small: {len(out)}")
         for col in ["latest", "pct_change", "volume", "amount", "turnover", "high", "low"]:
             out[col] = pd.to_numeric(out[col], errors="coerce")
         out.attrs["provider"] = self.name
