@@ -7,6 +7,7 @@ from pathlib import Path
 from data.cached_provider import CachedProvider
 from data.hydrator import hydrate_codes
 from providers.akshare_provider import AkshareProvider
+from providers.baostock_daily import BaostockHistoryProvider
 from providers.chain import ProviderChain
 from providers.demo import DemoProvider
 from providers.eastmoney import EastmoneyProvider
@@ -38,10 +39,16 @@ def make_raw_provider(name: str):
     if name == "tushare":
         return TushareHistoryProvider()
     if name == "auto":
-        # This factory is used by concurrent history hydration, so keep only
-        # price-capable providers here. Token-gated Tushare is appended only
-        # when explicitly configured in the environment.
-        providers = [EastmoneyProvider(), AkshareProvider(), TencentHistoryProvider()]
+        # BaoStock has been the most reliable no-token SH/SZ history source on
+        # hosted runners, so prefer it for price history. It intentionally does
+        # not provide the full current stock universe; ProviderChain therefore
+        # falls through to the quote/exchange identity providers for stock_list.
+        providers = [
+            BaostockHistoryProvider(),
+            EastmoneyProvider(),
+            AkshareProvider(),
+            TencentHistoryProvider(),
+        ]
         tushare = _optional_tushare()
         if tushare is not None:
             providers.append(tushare)
@@ -61,6 +68,7 @@ def make_provider(name: str, retries: int = 2):
         return RetryingProvider(TushareHistoryProvider(), attempts=attempts)
     if name == "auto":
         providers = [
+            RetryingProvider(BaostockHistoryProvider(), attempts=attempts),
             RetryingProvider(EastmoneyProvider(), attempts=attempts),
             RetryingProvider(AkshareProvider(), attempts=attempts),
             RetryingProvider(TencentHistoryProvider(), attempts=attempts),
