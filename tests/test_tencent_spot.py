@@ -33,7 +33,7 @@ def test_tencent_spot_routes_920_to_bj():
 
 
 def test_tencent_spot_parses_screening_metrics():
-    row = TencentSpotProvider._parse_line(_line("bj920002", "万达轴承", "920002"))
+    row = TencentSpotProvider._parse_line(_line("bj920002", "万达轴承", "920002").rstrip(";"))
     assert row is not None
     assert row["market"] == "BJ"
     assert row["code"] == "920002"
@@ -43,3 +43,10 @@ def test_tencent_spot_parses_screening_metrics():
     assert row["total_mcap_yi"] == 120.0
     assert row["float_mcap_yi"] == 100.0
     assert pd.notna(row["pct_change"])
+
+
+def test_tencent_spot_parses_multiple_assignments_on_one_line():
+    text = _line("sh600519", "贵州茅台", "600519") + _line("sz300750", "宁德时代", "300750")
+    rows = TencentSpotProvider._parse_response(text)
+    assert [row["code"] for row in rows] == ["600519", "300750"]
+    assert [row["market"] for row in rows] == ["SH", "SZ"]
