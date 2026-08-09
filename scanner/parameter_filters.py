@@ -9,14 +9,11 @@ import pandas as pd
 class SpotFilterConfig:
     markets: tuple[str, ...] = ("SH", "SZ", "BJ")
     exclude_st: bool = True
-    min_amount_yi: float = 0.0
-    min_turnover: float = 0.0
-    min_amplitude: float = 0.0
-    max_amplitude: float = 100.0
-    min_pct_change: float = -100.0
-    max_pct_change: float = 100.0
-    min_price: float = 0.0
-    max_price: float = 100000.0
+    min_amount_yi: float | None = None
+    min_turnover: float | None = None
+    amplitude_range: tuple[float, float] | None = None
+    pct_change_range: tuple[float, float] | None = None
+    price_range: tuple[float, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -56,14 +53,24 @@ def apply_spot_filters(universe: pd.DataFrame, quotes: pd.DataFrame, cfg: SpotFi
     for col in ["amount", "turnover", "amplitude", "pct_change", "price"]:
         out[col] = pd.to_numeric(out.get(col), errors="coerce")
 
-    out = out[
-        out["amount"].ge(float(cfg.min_amount_yi) * 1e8)
-        & out["turnover"].ge(float(cfg.min_turnover))
-        & out["amplitude"].between(float(cfg.min_amplitude), float(cfg.max_amplitude), inclusive="both")
-        & out["pct_change"].between(float(cfg.min_pct_change), float(cfg.max_pct_change), inclusive="both")
-        & out["price"].between(float(cfg.min_price), float(cfg.max_price), inclusive="both")
-    ]
-    return out.sort_values(["amount", "turnover", "amplitude"], ascending=[False, False, False]).reset_index(drop=True)
+    if cfg.min_amount_yi is not None:
+        out = out[out["amount"].ge(float(cfg.min_amount_yi) * 1e8)]
+    if cfg.min_turnover is not None:
+        out = out[out["turnover"].ge(float(cfg.min_turnover))]
+    if cfg.amplitude_range is not None:
+        lo, hi = cfg.amplitude_range
+        out = out[out["amplitude"].between(float(lo), float(hi), inclusive="both")]
+    if cfg.pct_change_range is not None:
+        lo, hi = cfg.pct_change_range
+        out = out[out["pct_change"].between(float(lo), float(hi), inclusive="both")]
+    if cfg.price_range is not None:
+        lo, hi = cfg.price_range
+        out = out[out["price"].between(float(lo), float(hi), inclusive="both")]
+
+    sort_cols = [c for c in ["amount", "turnover", "amplitude"] if c in out.columns]
+    if sort_cols:
+        out = out.sort_values(sort_cols, ascending=[False] * len(sort_cols), na_position="last")
+    return out.reset_index(drop=True)
 
 
 def apply_score_filters(ranking: pd.DataFrame, cfg: ScoreFilterConfig) -> pd.DataFrame:
