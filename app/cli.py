@@ -11,7 +11,6 @@ from providers.baostock_daily import BaostockHistoryProvider
 from providers.baostock_master import BaostockSecurityMasterProvider
 from providers.baostock_universe import BaostockSnapshotUniverseProvider
 from providers.chain import ProviderChain
-from providers.composite_universe import BaostockBseUniverseProvider
 from providers.demo import DemoProvider
 from providers.eastmoney import EastmoneyProvider
 from providers.health import check_provider_health
@@ -42,12 +41,7 @@ def make_raw_provider(name: str):
     if name == "tushare":
         return TushareHistoryProvider()
     if name == "auto":
-        providers = [
-            BaostockHistoryProvider(),
-            EastmoneyProvider(),
-            AkshareProvider(),
-            TencentHistoryProvider(),
-        ]
+        providers = [BaostockHistoryProvider(), EastmoneyProvider(), AkshareProvider(), TencentHistoryProvider()]
         tushare = _optional_tushare()
         if tushare is not None:
             providers.append(tushare)
@@ -81,12 +75,11 @@ def make_provider(name: str, retries: int = 2):
 
 
 def make_universe_provider(name: str = "auto", retries: int = 2):
-    """Security-identity chain independent from price-history providers.
+    """Security identity is independent from price history.
 
-    Hosted environments frequently block quote/exchange HTTP endpoints while
-    BaoStock remains reachable. Try BaoStock SH/SZ + BSE first, then preserve a
-    BaoStock SH/SZ-only fallback so the app can report partial market coverage
-    instead of failing the entire scan.
+    In hosted environments, prefer BaoStock's proven SH/SZ snapshot and append
+    BSE only on a best-effort basis. Partial market coverage is returned with
+    explicit metadata instead of failing the whole application.
     """
     if name == "demo":
         return DemoProvider()
@@ -101,20 +94,15 @@ def make_universe_provider(name: str = "auto", retries: int = 2):
         raise ValueError(name)
 
     master = BaostockSecurityMasterProvider()
-    providers = [
-        RetryingProvider(BaostockBseUniverseProvider(master), attempts=attempts),
-        RetryingProvider(BaostockSnapshotUniverseProvider(master), attempts=attempts),
-    ]
+    providers = [RetryingProvider(BaostockSnapshotUniverseProvider(master), attempts=attempts)]
     tushare = _optional_tushare()
     if tushare is not None:
         providers.append(RetryingProvider(tushare, attempts=attempts))
-    providers.extend(
-        [
-            RetryingProvider(EastmoneyProvider(), attempts=attempts),
-            RetryingProvider(AkshareProvider(), attempts=attempts),
-            RetryingProvider(OfficialExchangeUniverseProvider(), attempts=attempts),
-        ]
-    )
+    providers.extend([
+        RetryingProvider(EastmoneyProvider(), attempts=attempts),
+        RetryingProvider(AkshareProvider(), attempts=attempts),
+        RetryingProvider(OfficialExchangeUniverseProvider(), attempts=attempts),
+    ])
     return ProviderChain(providers)
 
 
@@ -147,63 +135,24 @@ def main() -> None:
     raw_provider = make_provider(args.provider, retries=args.retries)
     store = DuckDBStore(args.db)
     provider = raw_provider if args.no_cache else CachedProvider(raw_provider, store)
-
     end = date.today()
     start = end - timedelta(days=args.calendar_days)
 
     if args.all:
         universe_provider = make_universe_provider(args.provider, retries=args.retries)
-        candidates = select_universe(
-            universe_provider,
-            limit=args.limit,
-            exclude_st=not args.include_st,
-            min_spot_amount=args.min_spot_amount,
-        )
+        candidates = select_universe(universe_provider, limit=args.limit, exclude_st=not args.include_st, min_spot_amount=args.min_spot_amount)
         codes = candidates["code"].tolist() if not candidates.empty else []
         if codes and not args.no_cache and not args.no_prehydrate and args.hydrate_workers > 1:
-            report = hydrate_codes(
-                codes,
-                provider_factory=lambda: make_raw_provider(args.provider),
-                store=store,
-                start=start,
-                end=end,
-                workers=args.hydrate_workers,
-                requests_per_second=args.hydrate_rps,
-                retries=args.retries,
-            )
-            print(
-                "Hydration:",
-                {
-                    "codes": report.codes,
-                    "requested_ranges": report.requested_ranges,
-                    "succeeded_ranges": report.succeeded_ranges,
-                    "failed_ranges": report.failed_ranges,
-                    "fetched_rows": report.fetched_rows,
-                    "elapsed_seconds": report.elapsed_seconds,
-                },
-            )
+            report = hydrate_codes(codes, provider_factory=lambda: make_raw_provider(args.provider), store=store, start=start, end=end, workers=args.hydrate_workers, requests_per_second=args.hydrate_rps, retries=args.retries)
+            print("Hydration:", {"codes": report.codes, "requested_ranges": report.requested_ranges, "succeeded_ranges": report.succeeded_ranges, "failed_ranges": report.failed_ranges, "fetched_rows": report.fetched_rows, "elapsed_seconds": report.elapsed_seconds})
             if report.failures:
                 print("Hydration failures (first 10):")
                 for failure in report.failures[:10]:
                     print(f"  {failure.code} {failure.start}..{failure.end}: {failure.error}")
-        result = scan_codes(
-            codes,
-            provider,
-            end=end,
-            calendar_days=args.calendar_days,
-            lookback=args.lookback,
-            store=None if args.no_cache else store,
-        )
+        result = scan_codes(codes, provider, end=end, calendar_days=args.calendar_days, lookback=args.lookback, store=None if args.no_cache else store)
     else:
         codes = read_codes(args.watchlist)
-        result = scan_codes(
-            codes,
-            provider,
-            end=end,
-            calendar_days=args.calendar_days,
-            lookback=args.lookback,
-            store=None if args.no_cache else store,
-        )
+        result = scan_codes(codes, provider, end=end, calendar_days=args.calendar_days, lookback=args.lookback, store=None if args.no_cache else store)
 
     cols = ["code", "name", "score", "grade", "avg_amplitude", "avg_intraday_space", "median_amount", "max_drawdown", "provider", "error"]
     if result.empty:
