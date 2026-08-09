@@ -65,7 +65,7 @@ class TencentSpotProvider:
             return None
         symbol, payload = m.groups()
         fields = payload.split("~")
-        if len(fields) < 46:
+        if len(fields) < 53:
             return None
         prefix = symbol[:2]
         code = str(fields[2] or symbol[2:]).strip().zfill(6)
@@ -73,11 +73,9 @@ class TencentSpotProvider:
         prev_close = cls._num(fields, 4)
         high = cls._num(fields, 33)
         low = cls._num(fields, 34)
-        amount_wan = cls._num(fields, 57)
-        if pd.isna(amount_wan):
-            amount_wan = cls._num(fields, 37)
-        amplitude = float("nan")
-        if pd.notna(prev_close) and prev_close > 0 and pd.notna(high) and pd.notna(low):
+        amount_wan = cls._num(fields, 37)
+        amplitude = cls._num(fields, 43)
+        if pd.isna(amplitude) and pd.notna(prev_close) and prev_close > 0 and pd.notna(high) and pd.notna(low):
             amplitude = (high - low) / prev_close * 100.0
         return {
             "code": code,
@@ -93,8 +91,8 @@ class TencentSpotProvider:
             "volume_lots": cls._num(fields, 36),
             "amount": amount_wan * 10000.0 if pd.notna(amount_wan) else float("nan"),
             "turnover": cls._num(fields, 38),
-            "float_mcap_yi": cls._num(fields, 44),
-            "total_mcap_yi": cls._num(fields, 45),
+            "total_mcap_yi": cls._num(fields, 44),
+            "float_mcap_yi": cls._num(fields, 45),
             "quote_time": str(fields[30] or ""),
             "source": cls.name,
         }
