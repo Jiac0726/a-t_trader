@@ -9,11 +9,14 @@ import pandas as pd
 class SpotFilterConfig:
     markets: tuple[str, ...] = ("SH", "SZ", "BJ")
     exclude_st: bool = True
-    min_amount_yi: float | None = None
-    min_turnover: float | None = None
-    amplitude_range: tuple[float, float] | None = None
-    pct_change_range: tuple[float, float] | None = None
-    price_range: tuple[float, float] | None = None
+    min_amount_yi: float = 0.0
+    min_turnover: float = 0.0
+    min_amplitude: float = 0.0
+    max_amplitude: float = 100.0
+    min_pct_change: float = -100.0
+    max_pct_change: float = 100.0
+    min_price: float = 0.0
+    max_price: float = 100000.0
 
 
 @dataclass(frozen=True)
@@ -53,19 +56,18 @@ def apply_spot_filters(universe: pd.DataFrame, quotes: pd.DataFrame, cfg: SpotFi
     for col in ["amount", "turnover", "amplitude", "pct_change", "price"]:
         out[col] = pd.to_numeric(out.get(col), errors="coerce")
 
-    if cfg.min_amount_yi is not None:
+    # Sentinels below correspond to disabled UI controls. Skip the filter
+    # entirely so missing values are not silently rejected when a control is off.
+    if float(cfg.min_amount_yi) > 0:
         out = out[out["amount"].ge(float(cfg.min_amount_yi) * 1e8)]
-    if cfg.min_turnover is not None:
+    if float(cfg.min_turnover) > 0:
         out = out[out["turnover"].ge(float(cfg.min_turnover))]
-    if cfg.amplitude_range is not None:
-        lo, hi = cfg.amplitude_range
-        out = out[out["amplitude"].between(float(lo), float(hi), inclusive="both")]
-    if cfg.pct_change_range is not None:
-        lo, hi = cfg.pct_change_range
-        out = out[out["pct_change"].between(float(lo), float(hi), inclusive="both")]
-    if cfg.price_range is not None:
-        lo, hi = cfg.price_range
-        out = out[out["price"].between(float(lo), float(hi), inclusive="both")]
+    if float(cfg.min_amplitude) > 0 or float(cfg.max_amplitude) < 100:
+        out = out[out["amplitude"].between(float(cfg.min_amplitude), float(cfg.max_amplitude), inclusive="both")]
+    if float(cfg.min_pct_change) > -100 or float(cfg.max_pct_change) < 100:
+        out = out[out["pct_change"].between(float(cfg.min_pct_change), float(cfg.max_pct_change), inclusive="both")]
+    if float(cfg.min_price) > 0 or float(cfg.max_price) < 100000:
+        out = out[out["price"].between(float(cfg.min_price), float(cfg.max_price), inclusive="both")]
 
     sort_cols = [c for c in ["amount", "turnover", "amplitude"] if c in out.columns]
     if sort_cols:
