@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "a-t-trader"
 version = "0.2.0"
@@ -15,6 +19,25 @@ dependencies = [
 akshare = ["akshare>=1.17"]
 baostock = ["baostock>=0.9.3"]
 dev = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = [
+  "app*",
+  "backtest*",
+  "calibration*",
+  "core*",
+  "data*",
+  "dataset*",
+  "features*",
+  "presentation*",
+  "providers*",
+  "scanner*",
+  "scoring*",
+  "storage*",
+  "validation*",
+]
+namespaces = true
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
