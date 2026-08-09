@@ -2,12 +2,15 @@
 
 当前 `dev/v0.2-market-scanner` 已按 Streamlit Community Cloud 结构准备：
 
-- 入口：`app/dashboard.py`
+- 云端入口：`streamlit_app.py`
+- 实际界面：`app/dashboard.py`
 - Python：3.12
 - Python 依赖：根目录 `requirements.txt`
 - Streamlit 配置：`.streamlit/config.toml`
 - 默认可不配置任何密钥运行
 - 可选 `TUSHARE_TOKEN` 作为授权型备用历史源
+
+> 为什么增加 `streamlit_app.py`：Community Cloud 直接执行子目录入口时，项目根目录不一定在 Python 模块搜索路径中，会导致 `data`、`providers`、`backtest` 等顶层包出现 `ModuleNotFoundError`。根目录入口会先把仓库根目录加入 `sys.path`，再启动原有 Dashboard。
 
 ## 最快部署
 
@@ -20,7 +23,7 @@
 ```text
 Repository: Jiac0726/a-t_trader
 Branch: dev/v0.2-market-scanner
-Main file path: app/dashboard.py
+Main file path: streamlit_app.py
 Python version: 3.12
 ```
 
@@ -29,8 +32,24 @@ Python version: 3.12
 也可以在部署页使用 **Paste GitHub URL**，粘贴：
 
 ```text
-https://github.com/Jiac0726/a-t_trader/blob/dev/v0.2-market-scanner/app/dashboard.py
+https://github.com/Jiac0726/a-t_trader/blob/dev/v0.2-market-scanner/streamlit_app.py
 ```
+
+## 已经用旧入口部署过怎么办
+
+如果之前的 Main file path 是：
+
+```text
+app/dashboard.py
+```
+
+请删除旧 App 后重新部署，并将入口改为：
+
+```text
+streamlit_app.py
+```
+
+Community Cloud 使用 owner / repository / branch / entrypoint 作为 App 的 GitHub 坐标，入口文件变更需要重新部署。
 
 ## 可选：Tushare Token
 
