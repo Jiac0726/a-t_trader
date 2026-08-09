@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from app.cli import make_provider
+from app.cli import make_provider, make_universe_provider
 from data.cached_security_master import CachedSecurityMasterProvider
 from data.validator import validate_ohlcv
 from providers.baostock_master import BaostockSecurityMasterProvider
@@ -18,6 +18,7 @@ from providers.composite_universe import BaostockBseUniverseProvider
 from providers.chain import ProviderChain
 from providers.retrying import RetryingProvider
 from providers.tencent_history import TencentHistoryProvider
+from providers.tencent_spot import TencentSpotProvider
 from providers.benchmark import ETFS, BENCHMARKS, BaostockBenchmarkProvider, BenchmarkProviderChain, make_benchmark_provider
 from storage.duckdb_store import DuckDBStore
 from storage.security_snapshot_store import DuckDBSecuritySnapshotStore
@@ -78,6 +79,92 @@ def duckdb_probe(path: str):
     return probe
 
 
+def hosted_universe_probe(provider=None) -> CheckResult:
+    """Validate the exact identity path used by the Streamlit full-market page.
+
+    SH/SZ are hard requirements. BJ is best-effort on hosted networks and is
+    reported as WARN rather than silently pretending three-market coverage.
+    """
+    provider = provider or make_universe_provider("auto", retries=0)
+    try:
+        stocks = provider.stock_list()
+        if stocks is None or stocks.empty:
+            raise RuntimeError("hosted universe returned no rows")
+        required = {"code", "name", "market"}
+        if not required.issubset(stocks.columns):
+            raise RuntimeError(f"hosted universe missing columns: {sorted(required - set(stocks.columns))}")
+        x = stocks.copy()
+        x["market"] = x["market"].astype(str).str.upper().str.strip()
+        counts = {str(k): int(v) for k, v in x["market"].value_counts().to_dict().items()}
+        if len(x) < 3000:
+            raise RuntimeError(f"hosted universe too small: {len(x)}")
+        missing_core = [m for m in ("SH", "SZ") if counts.get(m, 0) <= 0]
+        if missing_core:
+            raise RuntimeError(f"hosted universe missing core markets: {missing_core}; counts={counts}")
+        status = "PASS" if counts.get("BJ", 0) > 0 else "WARN"
+        detail = f"hosted universe rows={len(x)} markets={counts}"
+        if status == "WARN":
+            detail += "; BJ unavailable on this hosted network"
+        return CheckResult(
+            "hosted_streamlit_universe",
+            status,
+            detail,
+            {
+                "rows": len(x),
+                "markets": counts,
+                "provider": stocks.attrs.get("provider", getattr(provider, "name", "")),
+                "snapshot_as_of": stocks.attrs.get("snapshot_as_of", ""),
+            },
+        )
+    except Exception as exc:
+        return CheckResult("hosted_streamlit_universe", "FAIL", str(exc), {})
+
+
+def tencent_spot_probe(provider=None, codes=("600519", "000001", "300750")) -> CheckResult:
+    """Validate the batch spot fields used by first-stage parameter screening."""
+    provider = provider or TencentSpotProvider(timeout=8.0, batch_size=len(codes))
+    expected = [str(code).zfill(6) for code in codes]
+    try:
+        quotes = provider.quotes(expected)
+        required = {"code", "market", "price", "amount", "turnover", "amplitude", "pct_change", "quote_time"}
+        if quotes is None or quotes.empty:
+            raise RuntimeError("Tencent spot returned no rows")
+        if not required.issubset(quotes.columns):
+            raise RuntimeError(f"Tencent spot missing fields: {sorted(required - set(quotes.columns))}")
+        quotes = quotes.copy()
+        quotes["code"] = quotes["code"].astype(str).str.zfill(6)
+        returned = set(quotes["code"])
+        missing = [code for code in expected if code not in returned]
+        if missing:
+            raise RuntimeError(f"Tencent spot missing representative codes: {missing}")
+        sample = quotes[quotes["code"].isin(expected)].copy()
+        for col in ("price", "amount", "turnover", "amplitude", "pct_change"):
+            values = pd.to_numeric(sample[col], errors="coerce")
+            if values.isna().any():
+                bad = sample.loc[values.isna(), "code"].tolist()
+                raise RuntimeError(f"Tencent spot {col} is missing for {bad}")
+        quote_times = sample["quote_time"].astype(str).str.strip()
+        if quote_times.eq("").any():
+            raise RuntimeError("Tencent spot quote_time is empty")
+        report = getattr(provider, "last_report", None)
+        return CheckResult(
+            "tencent_spot_screening",
+            "PASS",
+            f"batch spot rows={len(sample)} quote_time={quote_times.max()}",
+            {
+                "codes": expected,
+                "rows": len(sample),
+                "quote_time": quote_times.max(),
+                "requested": getattr(report, "requested", len(expected)),
+                "returned": getattr(report, "returned", len(sample)),
+                "failed_batches": getattr(report, "failed_batches", 0),
+                "provider": getattr(provider, "name", type(provider).__name__),
+            },
+        )
+    except Exception as exc:
+        return CheckResult("tencent_spot_screening", "FAIL", str(exc), {})
+
+
 def bse_migration_probe(mapping_provider=None, history_provider=None) -> CheckResult:
     """Informational live probe for the future BSE stitched-history path."""
     mapping_provider = mapping_provider or BseCodeMappingProvider()
@@ -126,9 +213,6 @@ def main() -> None:
     parser.add_argument("--benchmark-provider", choices=["auto", "eastmoney", "akshare"], default="auto")
     parser.add_argument("--benchmark", choices=sorted(BENCHMARKS), default="csi300")
     parser.add_argument("--reference-etf", choices=[""] + sorted(ETFS), default="csi300_etf_sh")
-    # Explicit representatives remain hard checks. BSE is intentionally not in
-    # this list because current-universe BSE history is validated separately as
-    # either a hard market probe or a visible WARN depending on source setup.
     parser.add_argument("--codes", default="600519,000001,300750")
     parser.add_argument("--db", default="market.duckdb")
     parser.add_argument("--with-baostock", action="store_true")
@@ -180,6 +264,9 @@ def main() -> None:
         daily_warning_markets=daily_warning_markets,
         membership_overlap_floor=args.membership_overlap_floor,
     )
+    if args.provider == "auto":
+        report.checks.append(hosted_universe_probe())
+        report.checks.append(tencent_spot_probe())
     if args.with_baostock:
         report.checks.append(bse_migration_probe())
 
