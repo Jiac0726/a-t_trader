@@ -17,8 +17,9 @@ class Master:
 
 
 def test_baostock_snapshot_universe_allows_explicit_shsz_partial_coverage():
-    provider = BaostockSnapshotUniverseProvider(Master(), as_of="2026-08-09")
+    provider = BaostockSnapshotUniverseProvider(Master(), as_of="2026-08-09", include_bse=False)
     out = provider.stock_list()
     assert len(out) == 3200
     assert set(out["market"]) == {"SH", "SZ"}
     assert out.attrs["market_coverage"] == ["SH", "SZ"]
+    assert out.attrs["missing_markets"] == ["BJ"]
