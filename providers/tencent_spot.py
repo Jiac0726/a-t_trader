@@ -9,7 +9,7 @@ import requests
 
 from .base import MarketDataError
 
-_LINE_RE = re.compile(r'^v_([^=]+)="(.*)";?$')
+_LINE_RE = re.compile(r'^v_([^=]+)="(.*)"$')
 
 
 @dataclass(frozen=True)
@@ -97,6 +97,20 @@ class TencentSpotProvider:
             "source": cls.name,
         }
 
+    @classmethod
+    def _parse_response(cls, text: str) -> list[dict]:
+        rows: list[dict] = []
+        # Tencent commonly returns multiple v_xxx assignments in one response
+        # separated by semicolons, not necessarily one record per text line.
+        for segment in text.replace("\r", "").replace("\n", "").split(";"):
+            segment = segment.strip()
+            if not segment:
+                continue
+            parsed = cls._parse_line(segment)
+            if parsed is not None:
+                rows.append(parsed)
+        return rows
+
     def quotes(self, codes: Iterable[str]) -> pd.DataFrame:
         normalized = list(dict.fromkeys(str(c).strip().zfill(6) for c in codes if str(c).strip()))
         rows: list[dict] = []
@@ -110,10 +124,7 @@ class TencentSpotProvider:
                 response = self.session.get(self.url + ",".join(symbols), timeout=self.timeout)
                 response.raise_for_status()
                 response.encoding = "gbk"
-                for line in response.text.splitlines():
-                    parsed = self._parse_line(line)
-                    if parsed is not None:
-                        rows.append(parsed)
+                rows.extend(self._parse_response(response.text))
             except Exception:
                 failed += 1
                 continue
