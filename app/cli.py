@@ -8,7 +8,10 @@ from data.cached_provider import CachedProvider
 from data.hydrator import hydrate_codes
 from providers.akshare_provider import AkshareProvider
 from providers.baostock_daily import BaostockHistoryProvider
+from providers.baostock_master import BaostockSecurityMasterProvider
+from providers.baostock_universe import BaostockSnapshotUniverseProvider
 from providers.chain import ProviderChain
+from providers.composite_universe import BaostockBseUniverseProvider
 from providers.demo import DemoProvider
 from providers.eastmoney import EastmoneyProvider
 from providers.health import check_provider_health
@@ -39,10 +42,6 @@ def make_raw_provider(name: str):
     if name == "tushare":
         return TushareHistoryProvider()
     if name == "auto":
-        # BaoStock has been the most reliable no-token SH/SZ history source on
-        # hosted runners, so prefer it for price history. It intentionally does
-        # not provide the full current stock universe; ProviderChain therefore
-        # falls through to the quote/exchange identity providers for stock_list.
         providers = [
             BaostockHistoryProvider(),
             EastmoneyProvider(),
@@ -57,6 +56,7 @@ def make_raw_provider(name: str):
 
 
 def make_provider(name: str, retries: int = 2):
+    """Price-history provider chain."""
     if name == "demo":
         return DemoProvider()
     attempts = max(1, retries + 1)
@@ -76,12 +76,46 @@ def make_provider(name: str, retries: int = 2):
         tushare = _optional_tushare()
         if tushare is not None:
             providers.append(RetryingProvider(tushare, attempts=attempts))
-        # Security identity remains independent from K-line sources. This
-        # official provider is the final no-token current-list fallback when
-        # quote endpoints are unavailable.
-        providers.append(OfficialExchangeUniverseProvider())
         return ProviderChain(providers)
     raise ValueError(name)
+
+
+def make_universe_provider(name: str = "auto", retries: int = 2):
+    """Security-identity chain independent from price-history providers.
+
+    Hosted environments frequently block quote/exchange HTTP endpoints while
+    BaoStock remains reachable. Try BaoStock SH/SZ + BSE first, then preserve a
+    BaoStock SH/SZ-only fallback so the app can report partial market coverage
+    instead of failing the entire scan.
+    """
+    if name == "demo":
+        return DemoProvider()
+    attempts = max(1, retries + 1)
+    if name == "eastmoney":
+        return RetryingProvider(EastmoneyProvider(), attempts=attempts)
+    if name == "akshare":
+        return RetryingProvider(AkshareProvider(), attempts=attempts)
+    if name == "tushare":
+        return RetryingProvider(TushareHistoryProvider(), attempts=attempts)
+    if name != "auto":
+        raise ValueError(name)
+
+    master = BaostockSecurityMasterProvider()
+    providers = [
+        RetryingProvider(BaostockBseUniverseProvider(master), attempts=attempts),
+        RetryingProvider(BaostockSnapshotUniverseProvider(master), attempts=attempts),
+    ]
+    tushare = _optional_tushare()
+    if tushare is not None:
+        providers.append(RetryingProvider(tushare, attempts=attempts))
+    providers.extend(
+        [
+            RetryingProvider(EastmoneyProvider(), attempts=attempts),
+            RetryingProvider(AkshareProvider(), attempts=attempts),
+            RetryingProvider(OfficialExchangeUniverseProvider(), attempts=attempts),
+        ]
+    )
+    return ProviderChain(providers)
 
 
 def main() -> None:
@@ -114,15 +148,13 @@ def main() -> None:
     store = DuckDBStore(args.db)
     provider = raw_provider if args.no_cache else CachedProvider(raw_provider, store)
 
-    if args.refresh_universe and isinstance(provider, CachedProvider):
-        provider.refresh_stock_list()
-
     end = date.today()
     start = end - timedelta(days=args.calendar_days)
 
     if args.all:
+        universe_provider = make_universe_provider(args.provider, retries=args.retries)
         candidates = select_universe(
-            provider,
+            universe_provider,
             limit=args.limit,
             exclude_st=not args.include_st,
             min_spot_amount=args.min_spot_amount,
