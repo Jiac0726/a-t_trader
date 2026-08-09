@@ -31,20 +31,42 @@ def test_nested_provider_chain_preserves_leaf_provider_attr():
     assert df.attrs["provider"] == "leaf"
 
 
-def test_auto_provider_keeps_tencent_price_and_official_identity_fallbacks(monkeypatch):
+def test_auto_price_provider_keeps_tencent_without_identity_provider(monkeypatch):
     from app.cli import make_provider
     monkeypatch.delenv("TUSHARE_TOKEN", raising=False)
     provider = make_provider("auto", retries=0)
     names = [getattr(x, "name", type(x).__name__) for x in provider.providers]
+    assert "baostock-history" in names
     assert "tencent-history" in names
     assert "tushare-history" not in names
-    assert names[-1] == "official-exchange-universe"
+    assert "official-exchange-universe" not in names
+    assert "baostock-snapshot-universe" not in names
 
 
-def test_auto_provider_adds_tushare_only_when_token_configured(monkeypatch):
+def test_auto_price_provider_adds_tushare_only_when_token_configured(monkeypatch):
     from app.cli import make_provider
     monkeypatch.setenv("TUSHARE_TOKEN", "configured-for-test")
     provider = make_provider("auto", retries=0)
     names = [getattr(x, "name", type(x).__name__) for x in provider.providers]
     assert "tushare-history" in names
+    assert "official-exchange-universe" not in names
+
+
+def test_auto_universe_provider_prefers_baostock_identity_chain(monkeypatch):
+    from app.cli import make_universe_provider
+    monkeypatch.delenv("TUSHARE_TOKEN", raising=False)
+    provider = make_universe_provider("auto", retries=0)
+    names = [getattr(x, "name", type(x).__name__) for x in provider.providers]
+    assert names[0] == "baostock-snapshot-universe"
+    assert "eastmoney-direct" in names
+    assert "akshare" in names
     assert names[-1] == "official-exchange-universe"
+
+
+def test_auto_universe_provider_includes_optional_tushare(monkeypatch):
+    from app.cli import make_universe_provider
+    monkeypatch.setenv("TUSHARE_TOKEN", "configured-for-test")
+    provider = make_universe_provider("auto", retries=0)
+    names = [getattr(x, "name", type(x).__name__) for x in provider.providers]
+    assert "tushare-history" in names
+    assert names[0] == "baostock-snapshot-universe"
