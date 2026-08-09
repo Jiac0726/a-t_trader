@@ -18,10 +18,11 @@ def _line(symbol: str, name: str, code: str, price=10.0, prev=9.5, high=10.5, lo
     fields[33] = str(high)
     fields[34] = str(low)
     fields[36] = "10000"
+    fields[37] = str(amount_wan)
     fields[38] = str(turnover)
-    fields[44] = "100"
-    fields[45] = "120"
-    fields[57] = str(amount_wan)
+    fields[43] = str((high - low) / prev * 100)
+    fields[44] = "120"
+    fields[45] = "100"
     return f'v_{symbol}="' + "~".join(fields) + '";'
 
 
@@ -39,4 +40,6 @@ def test_tencent_spot_parses_screening_metrics():
     assert row["amount"] == 25000.0 * 10000.0
     assert row["turnover"] == 2.0
     assert row["amplitude"] == (10.5 - 9.3) / 9.5 * 100
+    assert row["total_mcap_yi"] == 120.0
+    assert row["float_mcap_yi"] == 100.0
     assert pd.notna(row["pct_change"])
