@@ -31,6 +31,15 @@ def test_spot_filters_apply_all_enabled_metrics():
     assert out["code"].tolist() == ["600001"]
 
 
+def test_disabled_spot_metrics_do_not_drop_nan_rows():
+    universe = pd.DataFrame([{"code": "600001", "name": "A", "market": "SH"}])
+    quotes = pd.DataFrame([
+        {"code": "600001", "market": "SH", "price": float("nan"), "pct_change": float("nan"), "amplitude": float("nan"), "amount": float("nan"), "turnover": float("nan")}
+    ])
+    out = apply_spot_filters(universe, quotes, SpotFilterConfig(markets=("SH",)))
+    assert out["code"].tolist() == ["600001"]
+
+
 def test_score_filters_apply_history_thresholds():
     ranking = pd.DataFrame([
         {"code": "600001", "score": 75, "avg_amplitude": 4, "avg_intraday_space": 2.5, "median_amount": 8e8, "max_drawdown": -20, "risk_label": "中等"},
