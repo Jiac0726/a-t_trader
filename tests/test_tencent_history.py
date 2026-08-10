@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
+from providers.base import NoMarketData
 from providers.tencent_history import TencentHistoryProvider
 
 
@@ -62,3 +64,11 @@ def test_tencent_supports_5m_and_keeps_amount_quality_explicit():
     assert session.calls[0][1]["param"] == "bj920185,m5,,320"
     assert list(pd.to_datetime(out["datetime"]).dt.strftime("%H:%M")) == ["09:35", "09:40"]
     assert out.attrs["amount_quality"].startswith("estimated_")
+
+
+def test_tencent_daily_raw_fails_closed_instead_of_mislabeling_qfq_as_none():
+    session = Session()
+    provider = TencentHistoryProvider(session=session)
+    with pytest.raises(NoMarketData, match="verified raw/none"):
+        provider.history("600519", "2026-08-01", "2026-08-07", interval="1d", adjust="none")
+    assert session.calls == []
