@@ -21,12 +21,13 @@ from data.validator import validate_ohlcv
 from features.daily import daily_features
 from features.intraday import intraday_opportunity_features
 from presentation.ranking import enrich_t_ranking
+from presentation.single_stock_detail import build_component_detail, build_raw_metric_detail
 from scoring.t_score import build_t_score
 from storage.duckdb_store import DuckDBStore
 
 st.set_page_config(page_title="综合分析与回测", layout="wide")
 st.title("综合分析与回测")
-st.caption("用于全市场候选出来后的单股深挖：查看历史股性、5分钟T机会，并比较正T / 倒T历史表现。")
+st.caption("用于全市场候选出来后的单股深挖：不仅看T Score，还展开每个维度的原始值、评分区间、历史股性和5分钟T机会。")
 
 SOURCE_MAP = {
     "自动降级（推荐）": "auto",
@@ -78,31 +79,46 @@ with tab_stock:
             score = build_t_score(code, name, features, daily.attrs.get("provider", provider.name))
             interpreted = enrich_t_ranking(pd.DataFrame([score.to_dict()])).iloc[0]
 
-            c1, c2, c3, c4 = st.columns(4)
+            c1, c2, c3, c4, c5 = st.columns(5)
             c1.metric("T Score", f"{score.score:.1f}")
             c2.metric("适合度", str(interpreted["suitability"]))
             c3.metric("风险", str(interpreted["risk_label"]))
             c4.metric("平均振幅", f"{score.avg_amplitude:.2f}%")
+            c5.metric("中位成交额", f"{score.median_amount / 1e8:.2f}亿")
             st.info(str(interpreted["reason"]))
+
+            st.markdown("#### T Score 分项：得分 + 原始值 + 评分区间")
+            st.caption("分数只用于排序；真正判断一只股票是否适合做T，应同时看原始指标处在什么区间。")
+            components = build_component_detail(score, features)
+            st.dataframe(
+                components,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "分数": st.column_config.NumberColumn("分数", format="%.2f"),
+                    "原始值": st.column_config.TextColumn("原始值", width="medium"),
+                    "评分参考": st.column_config.TextColumn("评分参考", width="large"),
+                    "当前状态": st.column_config.TextColumn("当前状态", width="medium"),
+                },
+            )
+
+            with st.expander("查看全部原始指标明细", expanded=True):
+                raw_detail = build_raw_metric_detail(features)
+                st.dataframe(
+                    raw_detail,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "原始值": st.column_config.NumberColumn("原始值", format="%.3f"),
+                        "参考/说明": st.column_config.TextColumn("参考/说明", width="large"),
+                    },
+                )
+                st.caption(
+                    "注意：ATR(14)/收盘价目前作为辅助观察指标，并未直接进入T Score；其余标注为评分维度的指标均来自当前实际评分代码。"
+                )
 
             st.markdown("#### 日线走势")
             st.line_chart(daily.set_index("datetime")[["close"]])
-
-            components = pd.DataFrame(
-                {
-                    "维度": ["振幅空间", "流动性", "日内空间", "均值回归", "趋势稳定", "风险控制"],
-                    "分数": [
-                        score.amplitude_score,
-                        score.liquidity_score,
-                        score.tradable_space_score,
-                        score.mean_reversion_score,
-                        score.trend_score,
-                        score.risk_score,
-                    ],
-                }
-            )
-            st.markdown("#### T Score 分项")
-            st.dataframe(components, use_container_width=True, hide_index=True)
 
             try:
                 intraday = validate_ohlcv(
