@@ -26,6 +26,10 @@ class TencentHistoryProvider(MarketDataProvider):
     `amount` column as an explicitly estimated value (volume in lots × 100 ×
     OHLC mean) and mark the dataframe with `amount_estimated=True`. Liquidity
     calibration should prefer a provider with reported historical amount.
+
+    Important: verified unadjusted/raw daily bars are NOT exposed by this
+    adapter. ``adjust=none`` for daily data fails closed instead of silently
+    storing qfq rows under the raw namespace. Minute bars remain nominal prices.
     """
 
     name = "tencent-history"
@@ -48,8 +52,6 @@ class TencentHistoryProvider(MarketDataProvider):
         if raw.startswith(("sh", "sz", "bj")):
             return raw
         code = raw.zfill(6)
-        # BSE must be tested before generic routing. The 43/83/87 namespaces
-        # are legacy listed-company codes retained only for historical probes.
         if code.startswith(("920", "43", "83", "87")):
             return f"bj{code}"
         if code.startswith(("5", "6", "9")):
@@ -63,7 +65,6 @@ class TencentHistoryProvider(MarketDataProvider):
     @staticmethod
     def _estimate_amount(df: pd.DataFrame) -> pd.Series:
         typical = df[["open", "high", "low", "close"]].mean(axis=1)
-        # Tencent volume is quoted in lots for these CN K-line endpoints.
         return pd.to_numeric(df["volume"], errors="coerce") * 100.0 * typical
 
     def _get_json(self, url: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -131,7 +132,13 @@ class TencentHistoryProvider(MarketDataProvider):
     def history(self, code, start, end, interval="1d", adjust="qfq") -> pd.DataFrame:
         symbol = self._symbol(code)
         is_daily = interval in {"1d", "day"}
-        raw = self._daily(symbol, start, end, adjust) if is_daily else self._minute(symbol, interval)
+        normalized_adjust = str(adjust or "none").lower()
+        if is_daily and normalized_adjust not in {"qfq", "hfq"}:
+            raise NoMarketData(
+                "Tencent daily adapter does not expose verified raw/none history; refusing to store adjusted rows as raw"
+            )
+
+        raw = self._daily(symbol, start, end, normalized_adjust) if is_daily else self._minute(symbol, interval)
         if raw.empty:
             raise NoMarketData(f"Tencent returned no parseable rows for {symbol}")
         raw["datetime"] = pd.to_datetime(raw["datetime"], errors="coerce")
