@@ -27,6 +27,7 @@ from storage.duckdb_store import DuckDBStore
 st.set_page_config(page_title="全市场做T扫描器", layout="wide")
 st.title("全市场做T扫描器")
 st.caption("全市场证券母集 → 可调实时指标初筛 → Top N 历史T评分 → 可调历史指标筛选 → 最终候选榜。参数只控制筛选，不修改T Score公式。")
+st.caption("云端构建版本：2026-08-10-r1 · 分支 dev/v0.2-market-scanner · 入口 streamlit_app.py")
 
 SOURCE_MAP = {
     "自动降级（推荐）": "auto",
