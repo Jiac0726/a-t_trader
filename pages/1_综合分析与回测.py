@@ -14,42 +14,24 @@ os.chdir(ROOT)
 import pandas as pd
 import streamlit as st
 
-from app.cli import make_provider
 from backtest.t_engine import CostModel, best_single_t_envelope, mean_reversion_backtest, summarize_trades
-from data.cached_provider import CachedProvider
 from data.validator import validate_ohlcv
 from features.daily import daily_features
 from features.intraday import intraday_opportunity_features
 from presentation.ranking import enrich_t_ranking
 from presentation.single_stock_detail import build_component_detail, build_raw_metric_detail
+from providers.local_duckdb import LocalDuckDBProvider
 from scoring.t_score import build_t_score
 from storage.duckdb_store import DuckDBStore
 
 st.set_page_config(page_title="综合分析与回测", layout="wide")
 st.title("综合分析与回测")
-st.caption("用于全市场候选出来后的单股深挖：不仅看T Score，还展开每个维度的原始值、评分区间、历史股性和5分钟T机会。")
+st.caption("单股分析与回测只读取本地 DuckDB：不仅看T Score，还展开原始值、评分区间、历史股性和5分钟T机会。")
 
-SOURCE_MAP = {
-    "自动降级（推荐）": "auto",
-    "东方财富": "eastmoney",
-    "AKShare": "akshare",
-    "Tushare（需Token）": "tushare",
-    "离线演示": "demo",
-}
-
-provider_choice = st.sidebar.selectbox("历史行情数据源", list(SOURCE_MAP), index=0, key="analysis_provider")
+db_path = st.sidebar.text_input("本地行情数据库", "market.duckdb", key="analysis_db")
 lookback = st.sidebar.slider("T Score回看交易日", 20, 120, 60, 10, key="analysis_lookback")
-use_cache = st.sidebar.checkbox("启用 DuckDB 缓存", value=True, key="analysis_cache")
-db_path = st.sidebar.text_input("缓存数据库", "market.duckdb", disabled=not use_cache, key="analysis_db")
-retries = st.sidebar.slider("失败重试次数", 0, 4, 2, key="analysis_retries")
-
-
-def provider_and_store():
-    raw = make_provider(SOURCE_MAP[provider_choice], retries=int(retries))
-    if not use_cache:
-        return raw, None
-    store = DuckDBStore(db_path)
-    return CachedProvider(raw, store), store
+store = DuckDBStore(db_path)
+provider = LocalDuckDBProvider(store)
 
 
 def candidate_default_code() -> str:
@@ -68,7 +50,6 @@ with tab_stock:
     days = st.slider("5分钟观察自然日", 5, 60, 20, key="analysis_days")
 
     if st.button("分析这只股票", type="primary", key="analysis_run"):
-        provider, _ = provider_and_store()
         end = date.today()
         try:
             daily = validate_ohlcv(
@@ -88,11 +69,11 @@ with tab_stock:
             st.info(str(interpreted["reason"]))
 
             st.markdown("#### T Score 分项：得分 + 原始值 + 评分区间")
-            st.caption("分数只用于排序；真正判断一只股票是否适合做T，应同时看原始指标处在什么区间。")
+            st.caption("分数只用于排序；判断一只股票是否适合做T，应同时看原始指标处在什么区间。")
             components = build_component_detail(score, features)
             st.dataframe(
                 components,
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
                 column_config={
                     "分数": st.column_config.NumberColumn("分数", format="%.2f"),
@@ -106,16 +87,14 @@ with tab_stock:
                 raw_detail = build_raw_metric_detail(features)
                 st.dataframe(
                     raw_detail,
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True,
                     column_config={
                         "原始值": st.column_config.NumberColumn("原始值", format="%.3f"),
                         "参考/说明": st.column_config.TextColumn("参考/说明", width="large"),
                     },
                 )
-                st.caption(
-                    "注意：ATR(14)/收盘价目前作为辅助观察指标，并未直接进入T Score；其余标注为评分维度的指标均来自当前实际评分代码。"
-                )
+                st.caption("ATR(14)/收盘价目前作为辅助观察指标，并未直接进入T Score；其余标注为评分维度的指标来自当前实际评分代码。")
 
             st.markdown("#### 日线走势")
             st.line_chart(daily.set_index("datetime")[["close"]])
@@ -126,16 +105,21 @@ with tab_stock:
                 )
                 intra = intraday_opportunity_features(intraday, threshold_pct=1.0)
                 st.markdown("#### 5分钟历史T机会")
-                st.caption("分钟分析使用不复权历史名义价格，仅描述历史股性。")
+                st.caption("分钟分析读取本地不复权历史名义价格，仅描述历史股性。")
                 st.json(intra)
             except Exception as minute_exc:
-                st.warning(f"分钟数据当前不可用：{minute_exc}")
+                st.warning(f"本地5分钟数据当前不可用：{minute_exc}")
+                try:
+                    st.page_link("pages/2_数据管理.py", label="到数据管理补5分钟历史", icon="🗄️")
+                except Exception:
+                    pass
         except Exception as exc:
             st.error(str(exc))
+            st.info("单股分析不会再临时联网补历史。缺数据请先进入“数据管理”。")
 
 with tab_backtest:
     st.subheader("正T / 倒T历史对比")
-    st.caption("遵守A股T+1约束：正T买入后卖出等量旧底仓；倒T先卖旧底仓再买回。")
+    st.caption("遵守A股T+1约束：正T买入后卖出等量旧底仓；倒T先卖旧底仓再买回。回测只读取本地5分钟原始行情。")
     st.warning("历史最佳空间使用全天后视信息，只用于比较历史可实现空间；因果基线才按当时信息生成信号。")
 
     bt_code = st.text_input("回测股票代码", candidate_default_code(), max_chars=6, key="bt_code")
@@ -154,7 +138,6 @@ with tab_backtest:
     entry_z = st.slider("因果基线入场Z阈值", 0.5, 3.0, 1.0, 0.1, key="bt_entry_z")
 
     if st.button("比较正T / 倒T", type="primary", key="bt_run"):
-        provider, _ = provider_and_store()
         end = date.today()
         costs = CostModel(
             commission_rate=float(commission_pct) / 100.0,
@@ -198,9 +181,10 @@ with tab_backtest:
             b3.metric("累计净收益额", f"{base_sum.total_net_pnl:.2f} 元")
             b4.metric("平均单次净收益率", f"{base_sum.avg_net_return_pct:.3f}%")
             if not baseline.empty:
-                st.dataframe(baseline.sort_values("date", ascending=False), use_container_width=True, hide_index=True)
+                st.dataframe(baseline.sort_values("date", ascending=False), width="stretch", hide_index=True)
         except Exception as exc:
             st.error(str(exc))
+            st.info("回测不会临时联网。请到“数据管理”补该股票的5分钟原始历史。")
 
 st.divider()
 st.caption("本工具用于历史行情研究和候选筛选，不构成投资建议。")
