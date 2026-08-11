@@ -176,8 +176,14 @@ class CachedProvider(MarketDataProvider):
             except NoMarketData:
                 if row_low is None or row_high is None:
                     raise
-                self._mark_coverage(code, interval, left, right, adjust)
-                continue
+                span_days = int((right.normalize() - left.normalize()).days) + 1
+                if interval in {"1d", "day"} and span_days <= 4:
+                    # Only a weekend/short-holiday-sized daily gap can be
+                    # acknowledged without rows.  Longer gaps remain visible
+                    # failures, matching the parallel hydrator's semantics.
+                    self._mark_coverage(code, interval, left, right, adjust)
+                    continue
+                raise
 
             fetched_name = fresh.attrs.get("name", fetched_name)
             fetched_provider = fresh.attrs.get("provider", self.provider.name)

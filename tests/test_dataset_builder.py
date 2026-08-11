@@ -80,7 +80,7 @@ def test_daily_panel_and_real_minute_coverage_are_separate():
     assert coverage.loc["000001", "rows_5m"] == 0
 
 
-def test_minute_candidates_use_latest_score_then_liquidity():
+def test_minute_candidates_default_to_score_independent_stable_sample():
     from dataset.builder import select_minute_candidates
     panel = pd.DataFrame([
         {"date": "2026-01-01", "code": "000001", "score": 99, "median_amount": 1},
@@ -88,4 +88,20 @@ def test_minute_candidates_use_latest_score_then_liquidity():
         {"date": "2026-01-02", "code": "600000", "score": 80, "median_amount": 10},
         {"date": "2026-01-02", "code": "300001", "score": 80, "median_amount": 20},
     ])
-    assert select_minute_candidates(panel, 2) == ["300001", "600000"]
+    first = select_minute_candidates(panel, 2, seed=7)
+    changed = panel.copy()
+    changed["score"] = [0, 1000, -1000, 500]
+    changed["median_amount"] = [999, 0, 999, 0]
+    assert select_minute_candidates(changed, 2, seed=7) == first
+    assert len(first) == 2
+
+
+def test_latest_score_minute_selection_is_explicit_diagnostic_mode():
+    from dataset.builder import select_minute_candidates
+    panel = pd.DataFrame([
+        {"date": "2026-01-01", "code": "000001", "score": 99, "median_amount": 1},
+        {"date": "2026-01-02", "code": "000001", "score": 60, "median_amount": 100},
+        {"date": "2026-01-02", "code": "600000", "score": 80, "median_amount": 10},
+        {"date": "2026-01-02", "code": "300001", "score": 80, "median_amount": 20},
+    ])
+    assert select_minute_candidates(panel, 2, strategy="latest-score") == ["300001", "600000"]

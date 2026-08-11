@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
+from providers.base import MarketDataError
 from providers.tencent_spot import TencentSpotProvider
 
 
@@ -50,3 +52,51 @@ def test_tencent_spot_parses_multiple_assignments_on_one_line():
     rows = TencentSpotProvider._parse_response(text)
     assert [row["code"] for row in rows] == ["600519", "300750"]
     assert [row["market"] for row in rows] == ["SH", "SZ"]
+
+
+def test_tencent_spot_rejects_partial_batch_failure():
+    class Response:
+        text = _line("sh600519", "贵州茅台", "600519")
+        encoding = ""
+
+        @staticmethod
+        def raise_for_status():
+            return None
+
+    class Session:
+        def __init__(self):
+            self.headers = {}
+            self.calls = 0
+
+        def get(self, *_args, **_kwargs):
+            self.calls += 1
+            if self.calls == 2:
+                raise RuntimeError("simulated failed batch")
+            return Response()
+
+    provider = TencentSpotProvider(batch_size=1, session=Session())
+    with pytest.raises(MarketDataError, match="partial universe"):
+        provider.quotes(["600519", "000001"])
+    assert provider.last_report.returned == 1
+    assert provider.last_report.failed_batches == 1
+
+
+def test_tencent_spot_rejects_low_code_coverage_without_batch_error():
+    class Response:
+        text = _line("sh600519", "贵州茅台", "600519")
+        encoding = ""
+
+        @staticmethod
+        def raise_for_status():
+            return None
+
+    class Session:
+        headers = {}
+
+        @staticmethod
+        def get(*_args, **_kwargs):
+            return Response()
+
+    provider = TencentSpotProvider(batch_size=80, session=Session(), min_coverage_ratio=0.9)
+    with pytest.raises(MarketDataError, match="coverage too low"):
+        provider.quotes(["600519", "000001"])

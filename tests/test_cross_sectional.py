@@ -87,3 +87,10 @@ def test_cross_sectional_promotion_gate_rejects_unstable_result():
 def test_cross_sectional_promotion_gate_can_pass_stable_result():
     metrics = pd.DataFrame({"optimized_mean_daily_ic": [0.30, 0.22, 0.28, 0.25, 0.31], "v01_mean_daily_ic": [0.05, 0.04, 0.06, 0.03, 0.05], "amplitude_mean_daily_ic": [0.12, 0.10, 0.11, 0.09, 0.13], "liquidity_mean_daily_ic": [0.00, 0.01, -0.01, 0.02, 0.00], "tradable_space_mean_daily_ic": [0.08, 0.07, 0.09, 0.06, 0.08], "optimized_random_pvalue": [0.04, 0.08, 0.06, 0.10, 0.05], "optimized_top_bottom_spread": [0.4, 0.3, 0.35, 0.2, 0.45]})
     assert assess_cross_sectional_promotion_gate(metrics)["promote"] is True
+
+
+def test_cross_sectional_promotion_gate_requires_multiple_oos_folds():
+    metrics = pd.DataFrame({"optimized_mean_daily_ic": [0.30], "v01_mean_daily_ic": [0.05], "amplitude_mean_daily_ic": [0.10], "liquidity_mean_daily_ic": [0.00], "tradable_space_mean_daily_ic": [0.08], "optimized_random_pvalue": [0.04], "optimized_top_bottom_spread": [0.4]})
+    gate = assess_cross_sectional_promotion_gate(metrics)
+    assert gate["promote"] is False
+    assert gate["minimum_oos_folds"] is False

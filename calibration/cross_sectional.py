@@ -257,7 +257,7 @@ def optimize_cross_sectional_weights_on_training(train_panel: pd.DataFrame, labe
     return best
 
 
-def assess_cross_sectional_promotion_gate(metrics: pd.DataFrame, min_positive_fold_rate: float = 60.0, min_ic_improvement: float = 0.03, max_median_random_pvalue: float = 0.20, require_positive_spread: bool = True) -> dict[str, object]:
+def assess_cross_sectional_promotion_gate(metrics: pd.DataFrame, min_positive_fold_rate: float = 60.0, min_ic_improvement: float = 0.03, max_median_random_pvalue: float = 0.20, require_positive_spread: bool = True, min_oos_folds: int = 3) -> dict[str, object]:
     if metrics is None or metrics.empty:
         return {"promote": False, "reason": "no cross-sectional OOS folds"}
     opt = pd.to_numeric(metrics.get("optimized_mean_daily_ic"), errors="coerce").dropna()
@@ -276,10 +276,10 @@ def assess_cross_sectional_promotion_gate(metrics: pd.DataFrame, min_positive_fo
     median_p = float(pvals.median()) if not pvals.empty else 1.0
     spreads = pd.to_numeric(metrics.get("optimized_top_bottom_spread"), errors="coerce").dropna()
     mean_spread = float(spreads.mean()) if not spreads.empty else float("nan")
-    checks = {"beats_strongest_baseline": opt_mean >= strongest + float(min_ic_improvement), "positive_fold_rate": positive_rate >= float(min_positive_fold_rate), "random_null_significance": median_p <= float(max_median_random_pvalue), "positive_top_bottom_spread": (mean_spread > 0) if require_positive_spread else True}
+    checks = {"minimum_oos_folds": len(opt) >= int(min_oos_folds), "beats_strongest_baseline": opt_mean >= strongest + float(min_ic_improvement), "positive_fold_rate": positive_rate >= float(min_positive_fold_rate), "random_null_significance": median_p <= float(max_median_random_pvalue), "positive_top_bottom_spread": (mean_spread > 0) if require_positive_spread else True}
     promote = all(checks.values())
     failed = [name for name, passed in checks.items() if not passed]
-    return {"promote": promote, "reason": "all cross-sectional OOS gates passed" if promote else "failed: " + ", ".join(failed), "optimized_mean_daily_ic": round(opt_mean, 4), "strongest_baseline_mean_daily_ic": round(strongest, 4) if np.isfinite(strongest) else np.nan, "positive_fold_rate_pct": round(positive_rate, 2), "median_random_pvalue": round(median_p, 4), "mean_top_bottom_spread": round(mean_spread, 4) if np.isfinite(mean_spread) else np.nan, **checks}
+    return {"promote": promote, "reason": "all cross-sectional OOS gates passed" if promote else "failed: " + ", ".join(failed), "oos_folds": int(len(opt)), "required_oos_folds": int(min_oos_folds), "optimized_mean_daily_ic": round(opt_mean, 4), "strongest_baseline_mean_daily_ic": round(strongest, 4) if np.isfinite(strongest) else np.nan, "positive_fold_rate_pct": round(positive_rate, 2), "median_random_pvalue": round(median_p, 4), "mean_top_bottom_spread": round(mean_spread, 4) if np.isfinite(mean_spread) else np.nan, **checks}
 
 
 def _random_null_means(test: pd.DataFrame, label_col: str, min_assets: int, trials: int, rng: np.random.Generator) -> np.ndarray:

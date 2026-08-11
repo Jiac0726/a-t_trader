@@ -33,6 +33,12 @@ def test_costs_reduce_envelope_and_summary_is_consistent():
     assert summarize_trades(paid).trades == 1
 
 
+def test_hindsight_envelope_uses_no_trade_floor_after_costs():
+    bars = make_intraday([10.0, 10.0, 10.0, 10.0])
+    assert best_single_t_envelope(bars, "positive", 1000, 0.5, CostModel()).empty
+    assert best_single_t_envelope(bars, "reverse", 1000, 0.5, CostModel()).empty
+
+
 def test_causal_mean_reversion_executes_after_signal():
     prices = [10, 10.1, 10.0, 10.05, 10.0, 9.5, 9.2, 9.4, 9.7, 10.0, 10.1, 10.0]
     costs = CostModel(commission_rate=0, min_commission=0, stamp_duty_sell_rate=0, slippage_bps=0)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from dataset.quality import apply_oos_quality_gate
+from dataset.quality import apply_oos_quality_gate, assess_dataset_promotion_readiness
 
 
 def _panel() -> pd.DataFrame:
@@ -51,3 +51,23 @@ def test_quality_gate_requires_raw_minute_prices_and_known_source():
     reasons = dict(zip(out["code"], out["oos_exclusion_reasons"]))
     assert "minute_adjust_not_raw" in reasons["600519"]
     assert "minute_provider_unknown" in reasons["000001"]
+
+
+def test_dataset_promotion_gate_rejects_future_score_minute_selection():
+    result = assess_dataset_promotion_readiness(
+        exact_snapshots=True,
+        eligible_rows=100,
+        minute_selection_policy="latest-score",
+    )
+    assert result["promotion_ready_dataset"] is False
+    assert result["unbiased_minute_selection"] is False
+
+
+def test_dataset_promotion_gate_accepts_stable_hash_with_exact_snapshots():
+    result = assess_dataset_promotion_readiness(
+        exact_snapshots=True,
+        eligible_rows=100,
+        minute_selection_policy="stable-hash",
+    )
+    assert result["promotion_ready_dataset"] is True
+    assert result["dataset_gate_reasons"] == []

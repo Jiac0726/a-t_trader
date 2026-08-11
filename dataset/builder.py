@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+import hashlib
 from typing import Iterable
 
 import pandas as pd
@@ -144,6 +145,7 @@ def attach_minute_labels_from_store(
     if score_panel is None or score_panel.empty:
         return pd.DataFrame(), []
     wanted = _codes(codes if codes is not None else score_panel["code"].unique())
+    market_trading_calendar = sorted(pd.to_datetime(score_panel["date"], errors="coerce").dropna().dt.normalize().unique())
     failures: list[DatasetFailure] = []
     labeled_by_code: dict[str, pd.DataFrame] = {}
     for code in wanted:
@@ -162,7 +164,12 @@ def attach_minute_labels_from_store(
                 bottom_shares=bottom_shares,
                 t_ratio=t_ratio,
             )
-            labeled_by_code[code] = attach_forward_labels(scores, opportunities, horizon=horizon)
+            labeled_by_code[code] = attach_forward_labels(
+                scores,
+                opportunities,
+                horizon=horizon,
+                trading_calendar=market_trading_calendar,
+            )
         except Exception as exc:
             failures.append(DatasetFailure(code, "minute_label", str(exc)))
             labeled_by_code[code] = scores.assign(forward_opportunity_pct=float("nan"), forward_days=0)
@@ -172,13 +179,40 @@ def attach_minute_labels_from_store(
     return labeled, failures
 
 
-def select_minute_candidates(score_panel: pd.DataFrame, limit: int) -> list[str]:
-    """Choose a bounded minute-hydration batch from the latest daily score rows."""
+def select_minute_candidates(
+    score_panel: pd.DataFrame,
+    limit: int,
+    *,
+    strategy: str = "stable_hash",
+    seed: int = 42,
+) -> list[str]:
+    """Choose a bounded minute-hydration batch without hidden look-ahead.
+
+    ``stable_hash`` is the production/default policy.  It samples securities
+    deterministically from the already point-in-time-aware research universe
+    and never consults a future score or outcome.  ``latest_score`` is retained
+    for exploratory diagnostics only; datasets built with that policy must not
+    be eligible for formal weight promotion.
+    """
     if score_panel is None or score_panel.empty or int(limit) <= 0:
         return []
     x = score_panel.copy()
     x["date"] = pd.to_datetime(x["date"], errors="coerce")
     x["code"] = x["code"].astype(str).str.zfill(6)
+    strategy = str(strategy).strip().lower().replace("-", "_")
+    if strategy == "stable_hash":
+        codes = sorted(x["code"].dropna().unique().tolist())
+        ranked = sorted(
+            codes,
+            key=lambda code: (
+                hashlib.sha256(f"{int(seed)}:{code}".encode("utf-8")).hexdigest(),
+                code,
+            ),
+        )
+        return ranked[: int(limit)]
+    if strategy != "latest_score":
+        raise ValueError(f"unknown minute candidate strategy: {strategy}")
+
     latest = x.sort_values(["code", "date"]).groupby("code", as_index=False).tail(1)
     latest["score"] = pd.to_numeric(latest.get("score"), errors="coerce").fillna(-1)
     latest["median_amount"] = pd.to_numeric(latest.get("median_amount"), errors="coerce").fillna(0)

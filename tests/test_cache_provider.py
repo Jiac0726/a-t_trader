@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from datetime import date
 import pandas as pd
+import pytest
 
 from data.cached_provider import CachedProvider
+from providers.base import MarketDataProvider, NoMarketData
 from providers.demo import DemoProvider
 
 
@@ -86,3 +88,20 @@ def test_cached_provider_reuses_5m_history():
     assert len(first) == len(second)
     assert len(first) > 20
     assert raw.history_calls == 1
+
+
+class AlwaysNoData(MarketDataProvider):
+    name = "always-no-data"
+
+    def history(self, *args, **kwargs):
+        raise NoMarketData("unsupported range")
+
+
+def test_cached_provider_does_not_hide_long_no_data_extension():
+    store = MemoryStore()
+    initial = DemoProvider().history("300059", "2026-01-01", "2026-01-10", interval="1d")
+    store.save_history("300059", "1d", initial)
+    cached = CachedProvider(AlwaysNoData(), store)
+
+    with pytest.raises(NoMarketData, match="unsupported range"):
+        cached.history("300059", "2026-01-01", "2026-03-31", interval="1d")

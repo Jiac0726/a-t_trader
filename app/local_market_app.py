@@ -155,25 +155,42 @@ if active_descriptions:
 
 def get_first_stage_quotes(codes: list[str]) -> tuple[pd.DataFrame, str, str]:
     if quote_mode == "仅本地最新日K":
-        quotes = market_db.latest_daily_snapshot("none")
-        if quotes.empty:
-            quotes = market_db.latest_daily_snapshot("qfq")
-        return quotes, "本地最新日K", "非实时"
+        quotes = market_db.latest_daily_snapshot_prefer_raw()
+        fallback = int(quotes.attrs.get("qfq_fallback_codes", 0)) if not quotes.empty else 0
+        note = "非实时" if fallback == 0 else f"非实时；{fallback}只缺少raw，使用qfq最新日K兜底"
+        return quotes, "本地最新日K", note
 
     if quote_mode == "仅腾讯实时":
         quotes = TencentSpotProvider(batch_size=80).quotes(codes)
-        return quotes, "腾讯实时", "实时"
+        latest = quotes["quote_time"].astype(str).max() if "quote_time" in quotes.columns and not quotes.empty else ""
+        return quotes, "腾讯实时", f"实时；覆盖{len(quotes)}/{len(codes)}；最新时间{latest or '未知'}"
 
     try:
         quotes = TencentSpotProvider(batch_size=80).quotes(codes)
-        return quotes, "腾讯实时", "实时"
+        latest = quotes["quote_time"].astype(str).max() if "quote_time" in quotes.columns and not quotes.empty else ""
+        return quotes, "腾讯实时", f"实时；覆盖{len(quotes)}/{len(codes)}；最新时间{latest or '未知'}"
     except Exception as exc:
-        quotes = market_db.latest_daily_snapshot("none")
-        if quotes.empty:
-            quotes = market_db.latest_daily_snapshot("qfq")
+        quotes = market_db.latest_daily_snapshot_prefer_raw()
         if quotes.empty:
             raise RuntimeError(f"实时行情失败且本地日K也为空：{exc}") from exc
-        return quotes, "本地最新日K", f"腾讯失败后降级：{exc}"
+        fallback = int(quotes.attrs.get("qfq_fallback_codes", 0))
+        return quotes, "本地最新日K", f"腾讯失败后降级：{exc}；qfq兜底{fallback}只"
+
+
+def current_scan_signature() -> str:
+    """Snapshot first-stage inputs so stale session results are visible."""
+    return json.dumps(
+        {
+            "db_path": str(Path(DB_PATH).expanduser().resolve()),
+            "quote_mode": quote_mode,
+            "lookback": int(lookback),
+            "deep_limit": int(deep_limit),
+            "spot": spot_config.__dict__,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+    )
 
 
 if st.button("开始全市场做T扫描", type="primary", width="stretch"):
@@ -226,8 +243,7 @@ if st.button("开始全市场做T扫描", type="primary", width="stretch"):
         if valid.empty:
             raise RuntimeError("本地历史评分没有生成有效候选，请检查 qfq 数据完整性。")
 
-        st.session_state["full_market_valid_ranking"] = valid
-        st.session_state["full_market_scan_meta"] = {
+        meta = {
             "total_universe": total_universe,
             "first_stage_count": len(first_stage),
             "scoreable_count": len(scoreable),
@@ -236,7 +252,35 @@ if st.button("开始全市场做T扫描", type="primary", width="stretch"):
             "valid_count": len(valid),
             "quote_source": quote_source,
             "quote_note": quote_note,
+            "scan_signature": current_scan_signature(),
         }
+        try:
+            initial_filtered = apply_active_filters(valid, active_filters)
+            meta["scan_run_id"] = market_db.record_scan_run(
+                universe_rows=total_universe,
+                first_stage_rows=len(first_stage),
+                deep_rows=len(codes),
+                valid_score_rows=len(valid),
+                final_rows=len(initial_filtered.head(int(final_top))),
+                parameters=json.dumps(
+                    {
+                        "quote_mode": quote_mode,
+                        "spot": spot_config.__dict__,
+                        "history": active_filters,
+                        "lookback": int(lookback),
+                        "deep_limit": int(deep_limit),
+                        "final_top": int(final_top),
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    default=str,
+                ),
+                note=f"quote_source={quote_source}",
+            )
+        except Exception as audit_exc:
+            meta["scan_audit_warning"] = str(audit_exc)
+        st.session_state["full_market_valid_ranking"] = valid
+        st.session_state["full_market_scan_meta"] = meta
         st.session_state["first_stage_preview"] = first_stage.head(200).copy()
         status.update(label="本地全市场扫描完成", state="complete", expanded=False)
     except Exception as exc:
@@ -246,6 +290,11 @@ if st.button("开始全市场做T扫描", type="primary", width="stretch"):
 if "full_market_valid_ranking" in st.session_state:
     valid = st.session_state["full_market_valid_ranking"].copy()
     meta = st.session_state.get("full_market_scan_meta", {})
+    stale_first_stage = meta.get("scan_signature") != current_scan_signature()
+    if stale_first_stage:
+        st.warning("第一阶段参数或数据库已改变；下方仍是上一次扫描结果，请重新点击“开始全市场做T扫描”。")
+    if meta.get("scan_audit_warning"):
+        st.caption(f"扫描结果已生成，但审计记录写入失败：{meta['scan_audit_warning']}")
     filtered = apply_active_filters(valid, active_filters)
     filtered = filtered.sort_values(["score", "median_amount"], ascending=[False, False]).reset_index(drop=True)
     filtered["filter_rank"] = range(1, len(filtered) + 1)
@@ -321,19 +370,6 @@ if "full_market_valid_ranking" in st.session_state:
             "text/csv",
             width="stretch",
         )
-
-        try:
-            market_db.record_scan_run(
-                universe_rows=int(meta.get("total_universe", 0)),
-                first_stage_rows=int(meta.get("first_stage_count", 0)),
-                deep_rows=int(meta.get("deep_count", 0)),
-                valid_score_rows=int(meta.get("valid_count", 0)),
-                final_rows=len(display_top),
-                parameters=json.dumps({"spot": spot_config.__dict__, "history": active_filters}, ensure_ascii=False, default=str),
-                note=f"quote_source={quote_source}",
-            )
-        except Exception:
-            pass
 
 st.divider()
 st.caption("正常扫描不再调用 BaoStock / 东财 / AKShare 历史接口。缺数据时到“数据管理”一次性补库；以后每天只做增量更新。")

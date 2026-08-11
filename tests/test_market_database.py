@@ -46,3 +46,22 @@ def test_market_database_syncs_universe_and_builds_local_latest_snapshot(tmp_pat
     assert stats.universe_rows == 2
     assert stats.raw_daily_codes == 1
     assert stats.raw_daily_rows == 2
+
+
+def test_preferred_local_snapshot_fills_only_missing_raw_codes_from_qfq(tmp_path):
+    db = MarketDatabase(tmp_path / "mixed-snapshot.duckdb")
+    db.sync_universe(pd.DataFrame([
+        {"code": "600000", "name": "浦发银行", "market": "SH"},
+        {"code": "000001", "name": "平安银行", "market": "SZ"},
+    ]), source="fixture")
+    db.store.save_history("600000", "1d", _raw_bars(), adjust="none")
+    qfq = _raw_bars().copy()
+    qfq[["open", "high", "low", "close"]] *= 0.5
+    db.store.save_history("600000", "1d", qfq, adjust="qfq")
+    db.store.save_history("000001", "1d", qfq, adjust="qfq")
+
+    snap = db.latest_daily_snapshot_prefer_raw().set_index("code")
+    assert set(snap.index) == {"600000", "000001"}
+    assert snap.loc["600000", "source"] == "local-latest-daily"
+    assert snap.loc["000001", "source"] == "local-latest-daily-qfq-fallback"
+    assert snap.attrs["qfq_fallback_codes"] == 1

@@ -159,7 +159,9 @@ def _best_net_pair(day: pd.DataFrame, mode: Mode, shares: int, costs: CostModel)
                 best_net, best_pair = float(net), (best_entry, exit_i)
             if sell_proceeds[exit_i] > max_sell:
                 max_sell, best_entry = sell_proceeds[exit_i], exit_i
-    return best_pair
+    # Doing nothing is always available and has zero P&L.  A cost-aware
+    # opportunity ceiling must not turn the least-bad losing pair into a trade.
+    return best_pair if best_net > 0 else None
 
 
 def best_single_t_envelope(df: pd.DataFrame, mode: Mode, bottom_shares: int = 1000, t_ratio: float = 0.5, costs: CostModel | None = None, lot_size: int = 100) -> pd.DataFrame:

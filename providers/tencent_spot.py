@@ -30,9 +30,16 @@ class TencentSpotProvider:
     name = "tencent-spot"
     url = "https://qt.gtimg.cn/q="
 
-    def __init__(self, timeout: float = 10.0, batch_size: int = 80, session: requests.Session | None = None):
+    def __init__(
+        self,
+        timeout: float = 10.0,
+        batch_size: int = 80,
+        session: requests.Session | None = None,
+        min_coverage_ratio: float = 0.90,
+    ):
         self.timeout = float(timeout)
         self.batch_size = max(1, min(150, int(batch_size)))
+        self.min_coverage_ratio = max(0.0, min(1.0, float(min_coverage_ratio)))
         self.session = session or requests.Session()
         self.session.headers.update({"User-Agent": "Mozilla/5.0 a-t-trader/0.2"})
         self.last_report = TencentSpotReport(0, 0, 0, 0)
@@ -132,8 +139,19 @@ class TencentSpotProvider:
         if not out.empty:
             out = out.drop_duplicates(["market", "code"], keep="last").reset_index(drop=True)
         self.last_report = TencentSpotReport(len(normalized), len(out), batches, failed)
+        if failed:
+            raise MarketDataError(
+                f"Tencent spot quote incomplete: failed_batches={failed}/{batches}; "
+                "refusing to screen on a partial universe"
+            )
         if len(normalized) and out.empty:
             raise MarketDataError("Tencent spot quote batches returned no parseable rows")
+        coverage_ratio = len(out) / len(normalized) if normalized else 1.0
+        if coverage_ratio < self.min_coverage_ratio:
+            raise MarketDataError(
+                f"Tencent spot quote coverage too low: returned={len(out)}/{len(normalized)} "
+                f"({coverage_ratio:.1%}) < {self.min_coverage_ratio:.1%}"
+            )
         if not out.empty:
             out.attrs["provider"] = self.name
             out.attrs["report"] = self.last_report

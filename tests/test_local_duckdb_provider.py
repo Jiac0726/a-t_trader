@@ -46,3 +46,23 @@ def test_local_provider_fails_closed_when_history_missing(tmp_path):
 
     with pytest.raises(NoMarketData, match="本地数据库缺少"):
         provider.history("600000", "2026-08-01", "2026-08-10", interval="1d", adjust="qfq")
+
+
+def test_local_provider_caches_security_names_across_history_reads(tmp_path, monkeypatch):
+    store = DuckDBStore(tmp_path / "local-name-cache.duckdb")
+    store.save_stock_list(pd.DataFrame([{"code": "600000", "name": "浦发银行", "market": "SH"}]), provider="fixture")
+    store.save_history("600000", "1d", _bars(), adjust="qfq")
+    calls = 0
+    original = store.load_stock_list
+
+    def counted():
+        nonlocal calls
+        calls += 1
+        return original()
+
+    monkeypatch.setattr(store, "load_stock_list", counted)
+    provider = LocalDuckDBProvider(store)
+    first = provider.history("600000", "2026-08-01", "2026-08-10", interval="1d", adjust="qfq")
+    second = provider.history("600000", "2026-08-01", "2026-08-10", interval="1d", adjust="qfq")
+    assert first.attrs["name"] == second.attrs["name"] == "浦发银行"
+    assert calls == 1

@@ -153,8 +153,15 @@ def attach_forward_labels(
     opportunity_history: pd.DataFrame,
     horizon: int = 5,
     min_future_days: int | None = None,
+    trading_calendar=None,
 ) -> pd.DataFrame:
-    """Attach mean opportunity from the next N *strictly future* trading days."""
+    """Attach opportunity from the next N exact future score/trading dates.
+
+    Opportunity rows are never allowed to jump across missing minute-history
+    periods.  The score history supplies the expected trading-date sequence;
+    missing opportunity rows stay missing instead of being replaced by a much
+    later available day.
+    """
     horizon = int(horizon)
     if horizon <= 0:
         raise ValueError("horizon must be positive")
@@ -171,15 +178,29 @@ def attach_forward_labels(
 
     scores["date"] = pd.to_datetime(scores["date"])
     opp["date"] = pd.to_datetime(opp["date"])
-    opp = opp.sort_values("date").reset_index(drop=True)
-    opp_dates = opp["date"].to_numpy(dtype="datetime64[ns]")
-    opp_values = pd.to_numeric(opp["opportunity_net_return_pct"], errors="coerce").to_numpy(dtype=float)
+    opp = opp.sort_values("date").drop_duplicates("date", keep="last").reset_index(drop=True)
+    opp["opportunity_net_return_pct"] = pd.to_numeric(opp["opportunity_net_return_pct"], errors="coerce")
+    opportunity_by_date = opp.set_index("date")["opportunity_net_return_pct"]
+    calendar_values = scores["date"] if trading_calendar is None else pd.Series(list(trading_calendar))
+    parsed_calendar = pd.to_datetime(calendar_values, errors="coerce").dropna()
+    trading_dates = pd.DatetimeIndex(sorted(pd.DatetimeIndex(parsed_calendar).normalize().unique()))
+    date_positions = {pd.Timestamp(day): i for i, day in enumerate(trading_dates)}
 
     labels: list[float] = []
     counts: list[int] = []
     for score_date in scores["date"]:
-        start = int(np.searchsorted(opp_dates, np.datetime64(score_date), side="right"))
-        future = opp_values[start : start + horizon]
+        normalized = pd.Timestamp(score_date).normalize()
+        position = date_positions.get(normalized)
+        expected = (
+            trading_dates[position + 1 : position + 1 + horizon]
+            if position is not None
+            else pd.DatetimeIndex([])
+        )
+        if len(expected) < horizon:
+            counts.append(0)
+            labels.append(np.nan)
+            continue
+        future = pd.to_numeric(opportunity_by_date.reindex(expected), errors="coerce").to_numpy(dtype=float)
         future = future[np.isfinite(future)]
         counts.append(int(len(future)))
         labels.append(float(np.mean(future)) if len(future) >= min_future_days else np.nan)

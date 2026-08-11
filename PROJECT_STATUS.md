@@ -59,6 +59,9 @@ PR：#2，仍保持 Draft。原因不是基础工具不可用，而是 **T Score
 - [x] `oos_eligible_panel`
 - [x] 正式 OOS CLI 默认 fail-closed
 - [x] 权重晋级门槛
+- [x] 分钟研究样本使用与评分无关的稳定哈希选择
+- [x] 未来标签严格匹配紧邻交易日，不跨分钟数据缺口
+- [x] 后视机会采用“不交易=0”成本后下限
 
 **尚未完成：真实 T Score v0.2 权重晋级。** 当前不会拿 Demo / 合成数据结果冒充正式权重。
 
@@ -69,7 +72,7 @@ GitHub Actions `run #107`：**成功**。
 离线回归：
 
 ```text
-127 passed
+162 passed（2026-08-11 本地完整回归）
 compileall passed
 ```
 

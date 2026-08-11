@@ -86,3 +86,10 @@ def test_promotion_gate_rejects_unconvincing_oos_result():
 def test_promotion_gate_can_pass_strong_stable_oos_result():
     metrics = pd.DataFrame({"optimized_rank_ic": [0.30, 0.25, 0.28, 0.22, 0.35], "v01_rank_ic": [0.05, 0.06, 0.03, 0.08, 0.02], "amplitude_rank_ic": [0.10, 0.11, 0.08, 0.12, 0.09], "liquidity_rank_ic": [0.01, 0.00, 0.02, -0.01, 0.03], "tradable_space_rank_ic": [0.07, 0.06, 0.09, 0.05, 0.08], "optimized_random_pvalue": [0.04, 0.08, 0.06, 0.10, 0.05]})
     assert assess_promotion_gate(metrics)["promote"] is True
+
+
+def test_promotion_gate_requires_multiple_oos_folds():
+    metrics = pd.DataFrame({"optimized_rank_ic": [0.30], "v01_rank_ic": [0.05], "amplitude_rank_ic": [0.10], "liquidity_rank_ic": [0.01], "tradable_space_rank_ic": [0.07], "optimized_random_pvalue": [0.04]})
+    gate = assess_promotion_gate(metrics)
+    assert gate["promote"] is False
+    assert gate["minimum_oos_folds"] is False

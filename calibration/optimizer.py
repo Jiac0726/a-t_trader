@@ -186,7 +186,7 @@ def summarize_weight_stability(weight_history: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values("mean_weight", ascending=False).reset_index(drop=True)
 
 
-def assess_promotion_gate(fold_metrics: pd.DataFrame, min_positive_fold_rate: float = 60.0, min_ic_improvement: float = 0.03, max_median_random_pvalue: float = 0.20) -> dict[str, object]:
+def assess_promotion_gate(fold_metrics: pd.DataFrame, min_positive_fold_rate: float = 60.0, min_ic_improvement: float = 0.03, max_median_random_pvalue: float = 0.20, min_oos_folds: int = 3) -> dict[str, object]:
     if fold_metrics.empty:
         return {"promote": False, "reason": "no outer OOS folds"}
     opt = pd.to_numeric(fold_metrics.get("optimized_rank_ic"), errors="coerce").dropna()
@@ -202,10 +202,10 @@ def assess_promotion_gate(fold_metrics: pd.DataFrame, min_positive_fold_rate: fl
     positive_rate = float((opt > 0).mean() * 100)
     pvals = pd.to_numeric(fold_metrics.get("optimized_random_pvalue"), errors="coerce").dropna()
     median_p = float(pvals.median()) if not pvals.empty else 1.0
-    checks = {"beats_strongest_baseline": opt_mean >= strongest_baseline + float(min_ic_improvement), "positive_fold_rate": positive_rate >= float(min_positive_fold_rate), "random_null_significance": median_p <= float(max_median_random_pvalue)}
+    checks = {"minimum_oos_folds": len(opt) >= int(min_oos_folds), "beats_strongest_baseline": opt_mean >= strongest_baseline + float(min_ic_improvement), "positive_fold_rate": positive_rate >= float(min_positive_fold_rate), "random_null_significance": median_p <= float(max_median_random_pvalue)}
     promote = all(checks.values())
     failed = [name for name, passed in checks.items() if not passed]
-    return {"promote": promote, "reason": "all OOS gates passed" if promote else "failed: " + ", ".join(failed), "optimized_mean_rank_ic": round(opt_mean, 4), "strongest_baseline_mean_rank_ic": round(strongest_baseline, 4) if np.isfinite(strongest_baseline) else np.nan, "positive_fold_rate_pct": round(positive_rate, 2), "median_random_pvalue": round(median_p, 4), **checks}
+    return {"promote": promote, "reason": "all OOS gates passed" if promote else "failed: " + ", ".join(failed), "oos_folds": int(len(opt)), "required_oos_folds": int(min_oos_folds), "optimized_mean_rank_ic": round(opt_mean, 4), "strongest_baseline_mean_rank_ic": round(strongest_baseline, 4) if np.isfinite(strongest_baseline) else np.nan, "positive_fold_rate_pct": round(positive_rate, 2), "median_random_pvalue": round(median_p, 4), **checks}
 
 
 def _random_null_distribution(test: pd.DataFrame, label_col: str, rng: np.random.Generator, trials: int) -> np.ndarray:

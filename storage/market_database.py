@@ -265,6 +265,35 @@ class MarketDatabase:
             out.attrs["provider"] = "local-latest-daily"
         return out
 
+    def latest_daily_snapshot_prefer_raw(self) -> pd.DataFrame:
+        """Return one local quote row per code, preferring nominal/raw bars.
+
+        A partially built raw namespace must not silently remove securities
+        that do have qfq history.  qfq rows are used only for codes missing
+        from raw and are marked explicitly for the UI/audit trail.
+        """
+        raw = self.latest_daily_snapshot("none")
+        qfq = self.latest_daily_snapshot("qfq")
+        if raw.empty and qfq.empty:
+            return pd.DataFrame()
+        if raw.empty:
+            out = qfq.copy()
+            out["source"] = "local-latest-daily-qfq-fallback"
+            fallback_codes = len(out)
+        elif qfq.empty:
+            out = raw.copy()
+            fallback_codes = 0
+        else:
+            raw_codes = set(raw["code"].astype(str).str.zfill(6))
+            fallback = qfq[~qfq["code"].astype(str).str.zfill(6).isin(raw_codes)].copy()
+            fallback["source"] = "local-latest-daily-qfq-fallback"
+            fallback_codes = len(fallback)
+            out = pd.concat([raw, fallback], ignore_index=True, sort=False)
+        out = out.drop_duplicates("code", keep="first").sort_values("code").reset_index(drop=True)
+        out.attrs["provider"] = "local-latest-daily"
+        out.attrs["qfq_fallback_codes"] = int(fallback_codes)
+        return out
+
     def begin_update_run(self, run_type: str, requested_codes: int) -> str:
         run_id = uuid.uuid4().hex[:16]
         with self._connect() as con:

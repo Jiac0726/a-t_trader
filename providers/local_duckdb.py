@@ -20,9 +20,27 @@ class LocalDuckDBProvider(MarketDataProvider):
 
     def __init__(self, store: DuckDBStore):
         self.store = store
+        self._stocks_cache: pd.DataFrame | None = None
+        self._name_cache: dict[str, str] | None = None
+
+    def _stocks(self) -> pd.DataFrame:
+        if self._stocks_cache is None:
+            stocks = self.store.load_stock_list()
+            self._stocks_cache = pd.DataFrame() if stocks is None else stocks.copy()
+            if not self._stocks_cache.empty and "code" in self._stocks_cache.columns:
+                codes = self._stocks_cache["code"].astype(str).str.replace(r"\.0$", "", regex=True).str.zfill(6)
+                names = (
+                    self._stocks_cache["name"].fillna("").astype(str)
+                    if "name" in self._stocks_cache.columns
+                    else pd.Series("", index=self._stocks_cache.index)
+                )
+                self._name_cache = dict(zip(codes, names))
+            else:
+                self._name_cache = {}
+        return self._stocks_cache.copy()
 
     def stock_list(self) -> pd.DataFrame:
-        stocks = self.store.load_stock_list()
+        stocks = self._stocks()
         if stocks is None or stocks.empty:
             raise MarketDataError(
                 "本地股票池为空。请先进入“数据管理”执行“更新股票池/初始化数据库”。"
@@ -63,12 +81,9 @@ class LocalDuckDBProvider(MarketDataProvider):
             )
 
         name = ""
-        stocks = self.store.load_stock_list()
-        if stocks is not None and not stocks.empty and {"code", "name"}.issubset(stocks.columns):
-            codes = stocks["code"].astype(str).str.replace(r"\.0$", "", regex=True).str.zfill(6)
-            match = stocks.loc[codes.eq(code)]
-            if not match.empty:
-                name = str(match.iloc[0].get("name", ""))
+        self._stocks()
+        if self._name_cache is not None:
+            name = self._name_cache.get(code, "")
 
         out.attrs["name"] = name
         out.attrs["provider"] = self.name
@@ -77,9 +92,5 @@ class LocalDuckDBProvider(MarketDataProvider):
 
     def stock_name(self, code: str) -> str:
         code = str(code).strip().zfill(6)
-        stocks = self.store.load_stock_list()
-        if stocks is None or stocks.empty or "code" not in stocks.columns:
-            return ""
-        codes = stocks["code"].astype(str).str.replace(r"\.0$", "", regex=True).str.zfill(6)
-        match = stocks.loc[codes.eq(code)]
-        return "" if match.empty else str(match.iloc[0].get("name", ""))
+        self._stocks()
+        return "" if self._name_cache is None else self._name_cache.get(code, "")

@@ -186,10 +186,13 @@ python -m app.dataset_cli \
   --end 2026-08-07 \
   --with-baostock \
   --exact-snapshots \
-  --minute-limit 100
+  --minute-limit 100 \
+  --minute-selection stable-hash
 ```
 
-正式 OOS 校准入口默认 **fail-closed**，只接受数据集输出的 `oos_eligible_panel`。未知血缘、估算成交额、未验证的北交所迁码拼接等样本不会被偷偷纳入正式晋级。
+正式数据集默认用稳定哈希抽取有界分钟样本，不读取期末 T Score，避免用未来评分反向选择历史股票。未来机会标签只接受评分序列中紧邻的后续交易日；分钟数据缺日时标签保持缺失，不会跳到数月后的可用记录。
+
+正式 OOS 校准入口默认 **fail-closed**，只接受数据集输出的 `oos_eligible_panel`。未知血缘、估算成交额、未验证的北交所迁码拼接、带未来评分选择偏差的 `latest-score` 分钟样本都不会被用于正式晋级。
 
 ## 真实验证状态（2026-08-07）
 
@@ -198,7 +201,7 @@ GitHub Actions `run #107`：**整轮成功**。
 离线回归：
 
 ```text
-127 passed
+162 passed（2026-08-11 本地完整回归）
 compileall passed
 ```
 

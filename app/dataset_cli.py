@@ -17,7 +17,7 @@ from dataset.builder import (
     select_minute_candidates,
     universe_codes_from_lifecycle,
 )
-from dataset.quality import apply_oos_quality_gate
+from dataset.quality import apply_oos_quality_gate, assess_dataset_promotion_readiness
 from providers.baostock_master import BaostockSecurityMasterProvider
 from storage.duckdb_store import DuckDBStore
 from storage.security_snapshot_store import DuckDBSecuritySnapshotStore
@@ -37,6 +37,13 @@ def main() -> None:
     p.add_argument("--horizon", type=int, default=5)
     p.add_argument("--limit", type=int, default=0, help="研究/联调时限制股票数量；0=不限制")
     p.add_argument("--minute-limit", type=int, default=0, help="本轮分钟数据最多处理多少只；0=只使用已有分钟缓存")
+    p.add_argument(
+        "--minute-selection",
+        choices=["stable-hash", "latest-score"],
+        default="stable-hash",
+        help="分钟样本选择；stable-hash不读取未来评分，latest-score仅限诊断且禁止正式晋级",
+    )
+    p.add_argument("--minute-selection-seed", type=int, default=42)
     p.add_argument("--minute-days", type=int, default=120, help="分钟请求的日历回看窗口；实际可得范围以返回数据为准")
     p.add_argument("--workers", type=int, default=4)
     p.add_argument("--rps", type=float, default=3.0)
@@ -101,8 +108,15 @@ def main() -> None:
 
     minute_codes: list[str] = []
     minute_report = None
+    minute_selection_policy = "existing-full-cache"
     if args.minute_limit > 0:
-        minute_codes = select_minute_candidates(daily_panel, args.minute_limit)
+        minute_selection_policy = args.minute_selection
+        minute_codes = select_minute_candidates(
+            daily_panel,
+            args.minute_limit,
+            strategy=args.minute_selection,
+            seed=args.minute_selection_seed,
+        )
         minute_start = max(pd.Timestamp(args.start), pd.Timestamp(args.end) - pd.Timedelta(days=args.minute_days))
         if minute_codes:
             minute_report = hydrate_codes(
@@ -173,9 +187,23 @@ def main() -> None:
     }
 
     quality_payload = quality_gate.to_dict()
+    daily_codes = set(daily_panel["code"].astype(str).str.zfill(6)) if not daily_panel.empty else set()
+    covered_codes = (
+        set(coverage.loc[pd.to_numeric(coverage["rows_5m"], errors="coerce").fillna(0).gt(0), "code"].astype(str).str.zfill(6))
+        if not coverage.empty and {"code", "rows_5m"}.issubset(coverage.columns)
+        else set()
+    )
+    full_existing_coverage = bool(daily_codes and daily_codes.issubset(covered_codes))
+    readiness = assess_dataset_promotion_readiness(
+        exact_snapshots=bool(args.exact_snapshots),
+        eligible_rows=quality_gate.eligible_rows,
+        minute_selection_policy=minute_selection_policy,
+        full_existing_minute_coverage=full_existing_coverage,
+    )
     quality_payload["requires_exact_point_in_time_snapshots_for_promotion"] = True
     quality_payload["exact_point_in_time_snapshots_used"] = bool(args.exact_snapshots)
-    quality_payload["promotion_ready_dataset"] = bool(args.exact_snapshots and quality_gate.eligible_rows > 0)
+    quality_payload["minute_selection_seed"] = int(args.minute_selection_seed)
+    quality_payload.update(readiness)
 
     payload = {
         "build": build.to_dict(),

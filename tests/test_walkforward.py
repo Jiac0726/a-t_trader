@@ -22,11 +22,37 @@ def test_walk_forward_never_trains_on_test_or_gap():
 
 
 def test_forward_labels_use_strictly_future_dates():
-    scores = pd.DataFrame({"date": pd.to_datetime(["2026-01-01", "2026-01-02"]), "score": [50, 60]})
+    scores = pd.DataFrame({"date": pd.to_datetime(["2026-01-01", "2026-01-02", "2026-01-03", "2026-01-04"]), "score": [50, 60, 55, 58]})
     opp = pd.DataFrame({"date": pd.to_datetime(["2026-01-01", "2026-01-02", "2026-01-03", "2026-01-04"]), "opportunity_net_return_pct": [100.0, 1.0, 2.0, 3.0]})
     labeled = attach_forward_labels(scores, opp, horizon=2)
     assert labeled.iloc[0]["forward_opportunity_pct"] == 1.5
     assert labeled.iloc[1]["forward_opportunity_pct"] == 2.5
+
+
+def test_forward_labels_do_not_jump_across_missing_minute_dates():
+    scores = pd.DataFrame({
+        "date": pd.bdate_range("2026-01-01", periods=8),
+        "score": range(8),
+    })
+    opp = pd.DataFrame({
+        "date": [scores.iloc[1]["date"], scores.iloc[3]["date"], scores.iloc[4]["date"]],
+        "opportunity_net_return_pct": [1.0, 99.0, 2.0],
+    })
+    labeled = attach_forward_labels(scores, opp, horizon=2)
+    assert pd.isna(labeled.iloc[0]["forward_opportunity_pct"])
+    assert labeled.iloc[0]["forward_days"] == 1
+
+
+def test_forward_labels_can_use_market_calendar_to_expose_stock_date_gap():
+    market_dates = pd.bdate_range("2026-01-01", periods=5)
+    scores = pd.DataFrame({"date": [market_dates[0], market_dates[2], market_dates[3]], "score": [50, 60, 70]})
+    opp = pd.DataFrame({
+        "date": [market_dates[2], market_dates[3]],
+        "opportunity_net_return_pct": [1.0, 2.0],
+    })
+    labeled = attach_forward_labels(scores, opp, horizon=2, trading_calendar=market_dates)
+    assert pd.isna(labeled.iloc[0]["forward_opportunity_pct"])
+    assert labeled.iloc[0]["forward_days"] == 1
 
 
 def test_score_history_is_unchanged_when_only_future_bars_change():

@@ -21,6 +21,41 @@ class QualityGateSummary:
         return asdict(self)
 
 
+def assess_dataset_promotion_readiness(
+    *,
+    exact_snapshots: bool,
+    eligible_rows: int,
+    minute_selection_policy: str,
+    full_existing_minute_coverage: bool = False,
+) -> dict[str, object]:
+    """Decide whether dataset construction itself is safe for formal OOS.
+
+    Statistical promotion is evaluated later.  This gate only certifies that
+    the dataset used exact point-in-time membership, contains eligible labels,
+    and did not choose historical securities using a future/latest score.
+    """
+    policy = str(minute_selection_policy).strip().lower()
+    unbiased = bool(
+        policy == "stable-hash"
+        or (policy == "existing-full-cache" and full_existing_minute_coverage)
+    )
+    ready = bool(exact_snapshots and int(eligible_rows) > 0 and unbiased)
+    reasons: list[str] = []
+    if not exact_snapshots:
+        reasons.append("exact_point_in_time_snapshots_required")
+    if int(eligible_rows) <= 0:
+        reasons.append("no_eligible_rows")
+    if not unbiased:
+        reasons.append("minute_selection_may_use_future_information_or_partial_unknown_cache")
+    return {
+        "promotion_ready_dataset": ready,
+        "unbiased_minute_selection": unbiased,
+        "minute_selection_policy": policy,
+        "full_existing_minute_coverage": bool(full_existing_minute_coverage),
+        "dataset_gate_reasons": reasons,
+    }
+
+
 def _bool_series(frame: pd.DataFrame, column: str, default: bool = False) -> pd.Series:
     if column not in frame.columns:
         return pd.Series(default, index=frame.index, dtype=bool)

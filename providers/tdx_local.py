@@ -167,7 +167,9 @@ class TdxLocalHistoryProvider(MarketDataProvider):
                 "provider": self.name,
                 "code": symbol,
                 "market": market.upper(),
-                "source_path": str(path),
+                # Persist a platform-neutral lineage value so reports and
+                # manifests remain comparable across Windows/Linux runners.
+                "source_path": path.as_posix(),
                 "adjust": "none",
                 "amount_quality": "tdx_raw",
             }
