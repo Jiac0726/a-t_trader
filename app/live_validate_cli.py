@@ -1,0 +1,282 @@
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import tempfile
+from pathlib import Path
+
+import pandas as pd
+
+from app.cli import make_provider, make_universe_provider
+from data.cached_security_master import CachedSecurityMasterProvider
+from data.validator import validate_ohlcv
+from providers.baostock_master import BaostockSecurityMasterProvider
+from providers.baostock_daily import BaostockHistoryProvider
+from providers.bse_code_mapping import BseCodeMappingProvider
+from providers.composite_universe import BaostockBseUniverseProvider
+from providers.chain import ProviderChain
+from providers.retrying import RetryingProvider
+from providers.tencent_history import TencentHistoryProvider
+from providers.tencent_spot import TencentSpotProvider
+from providers.benchmark import ETFS, BENCHMARKS, BaostockBenchmarkProvider, BenchmarkProviderChain, make_benchmark_provider
+from storage.duckdb_store import DuckDBStore
+from storage.security_snapshot_store import DuckDBSecuritySnapshotStore
+from validation.live import CheckResult, run_live_validation
+
+
+def duckdb_probe(path: str):
+    """Use a temporary sibling DB; never pollute the user's research database."""
+    base = Path(path).expanduser().resolve()
+
+    def probe():
+        base.parent.mkdir(parents=True, exist_ok=True)
+        fd, temp_name = tempfile.mkstemp(prefix="a_t_trader_validate_", suffix=".duckdb", dir=base.parent)
+        Path(temp_name).unlink(missing_ok=True)
+        try:
+            store = DuckDBStore(temp_name)
+            sample = pd.DataFrame(
+                {
+                    "datetime": [pd.Timestamp("2026-01-02")],
+                    "open": [1.0],
+                    "high": [1.1],
+                    "low": [0.9],
+                    "close": [1.0],
+                    "volume": [100.0],
+                    "amount": [1000.0],
+                }
+            )
+            store.save_history("999999", "1d", sample)
+            out = store.load_history("999999", "1d")
+            if len(out) != 1:
+                raise RuntimeError(f"DuckDB history roundtrip rows={len(out)}")
+
+            snap_store = DuckDBSecuritySnapshotStore(temp_name)
+            snapshot = pd.DataFrame(
+                {
+                    "as_of": [pd.Timestamp("2026-01-02")],
+                    "code": ["600519"],
+                    "exchange": ["SH"],
+                    "name": ["probe"],
+                    "trade_status": [1],
+                    "source_code": ["sh.600519"],
+                    "source": ["probe"],
+                }
+            )
+            snap_store.save_security_snapshot(snapshot, "probe")
+            snap_out = snap_store.load_security_snapshot("2026-01-02", "probe")
+            if len(snap_out) != 1:
+                raise RuntimeError(f"DuckDB snapshot roundtrip rows={len(snap_out)}")
+            return "history + security-snapshot write/read roundtrip OK", {"history_rows": len(out), "snapshot_rows": len(snap_out)}
+        finally:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            Path(temp_name).unlink(missing_ok=True)
+            Path(temp_name + ".wal").unlink(missing_ok=True)
+
+    return probe
+
+
+def hosted_universe_probe(provider=None) -> CheckResult:
+    """Validate the exact identity path used by the Streamlit full-market page.
+
+    SH/SZ are hard requirements. BJ is best-effort on hosted networks and is
+    reported as WARN rather than silently pretending three-market coverage.
+    """
+    provider = provider or make_universe_provider("auto", retries=0)
+    try:
+        stocks = provider.stock_list()
+        if stocks is None or stocks.empty:
+            raise RuntimeError("hosted universe returned no rows")
+        required = {"code", "name", "market"}
+        if not required.issubset(stocks.columns):
+            raise RuntimeError(f"hosted universe missing columns: {sorted(required - set(stocks.columns))}")
+        x = stocks.copy()
+        x["market"] = x["market"].astype(str).str.upper().str.strip()
+        counts = {str(k): int(v) for k, v in x["market"].value_counts().to_dict().items()}
+        if len(x) < 3000:
+            raise RuntimeError(f"hosted universe too small: {len(x)}")
+        missing_core = [m for m in ("SH", "SZ") if counts.get(m, 0) <= 0]
+        if missing_core:
+            raise RuntimeError(f"hosted universe missing core markets: {missing_core}; counts={counts}")
+        status = "PASS" if counts.get("BJ", 0) > 0 else "WARN"
+        detail = f"hosted universe rows={len(x)} markets={counts}"
+        if status == "WARN":
+            detail += "; BJ unavailable on this hosted network"
+        return CheckResult(
+            "hosted_streamlit_universe",
+            status,
+            detail,
+            {
+                "rows": len(x),
+                "markets": counts,
+                "provider": stocks.attrs.get("provider", getattr(provider, "name", "")),
+                "snapshot_as_of": stocks.attrs.get("snapshot_as_of", ""),
+            },
+        )
+    except Exception as exc:
+        return CheckResult("hosted_streamlit_universe", "FAIL", str(exc), {})
+
+
+def tencent_spot_probe(provider=None, codes=("600519", "000001", "300750")) -> CheckResult:
+    """Validate the batch spot fields used by first-stage parameter screening."""
+    provider = provider or TencentSpotProvider(timeout=8.0, batch_size=len(codes))
+    expected = [str(code).zfill(6) for code in codes]
+    try:
+        quotes = provider.quotes(expected)
+        required = {"code", "market", "price", "amount", "turnover", "amplitude", "pct_change", "quote_time"}
+        if quotes is None or quotes.empty:
+            raise RuntimeError("Tencent spot returned no rows")
+        if not required.issubset(quotes.columns):
+            raise RuntimeError(f"Tencent spot missing fields: {sorted(required - set(quotes.columns))}")
+        quotes = quotes.copy()
+        quotes["code"] = quotes["code"].astype(str).str.zfill(6)
+        returned = set(quotes["code"])
+        missing = [code for code in expected if code not in returned]
+        if missing:
+            raise RuntimeError(f"Tencent spot missing representative codes: {missing}")
+        sample = quotes[quotes["code"].isin(expected)].copy()
+        for col in ("price", "amount", "turnover", "amplitude", "pct_change"):
+            values = pd.to_numeric(sample[col], errors="coerce")
+            if values.isna().any():
+                bad = sample.loc[values.isna(), "code"].tolist()
+                raise RuntimeError(f"Tencent spot {col} is missing for {bad}")
+        quote_times = sample["quote_time"].astype(str).str.strip()
+        if quote_times.eq("").any():
+            raise RuntimeError("Tencent spot quote_time is empty")
+        report = getattr(provider, "last_report", None)
+        return CheckResult(
+            "tencent_spot_screening",
+            "PASS",
+            f"batch spot rows={len(sample)} quote_time={quote_times.max()}",
+            {
+                "codes": expected,
+                "rows": len(sample),
+                "quote_time": quote_times.max(),
+                "requested": getattr(report, "requested", len(expected)),
+                "returned": getattr(report, "returned", len(sample)),
+                "failed_batches": getattr(report, "failed_batches", 0),
+                "provider": getattr(provider, "name", type(provider).__name__),
+            },
+        )
+    except Exception as exc:
+        return CheckResult("tencent_spot_screening", "FAIL", str(exc), {})
+
+
+def bse_migration_probe(mapping_provider=None, history_provider=None) -> CheckResult:
+    """Informational live probe for the future BSE stitched-history path."""
+    mapping_provider = mapping_provider or BseCodeMappingProvider()
+    history_provider = history_provider or TencentHistoryProvider()
+    try:
+        mapping = mapping_provider.mapping()
+        if mapping.empty:
+            raise RuntimeError("official BSE code mapping is empty")
+        row = mapping.iloc[0]
+        old_code = str(row["old_code"]).zfill(6)
+        new_code = str(row["new_code"]).zfill(6)
+        switch = pd.Timestamp(mapping_provider.switch_date).normalize()
+
+        old_start = switch - pd.Timedelta(days=120)
+        old_end = switch - pd.Timedelta(days=1)
+        new_start = switch
+        new_end = switch + pd.Timedelta(days=120)
+
+        old = validate_ohlcv(history_provider.history(old_code, old_start, old_end, interval="1d", adjust="qfq"))
+        new = validate_ohlcv(history_provider.history(new_code, new_start, new_end, interval="1d", adjust="qfq"))
+        return CheckResult(
+            "bse_migrated_history_probe",
+            "PASS",
+            f"{old_code}->{new_code}: legacy rows={len(old)}, current rows={len(new)}",
+            {
+                "old_code": old_code,
+                "new_code": new_code,
+                "switch_date": str(switch.date()),
+                "legacy_rows": len(old),
+                "current_rows": len(new),
+                "provider": getattr(history_provider, "name", type(history_provider).__name__),
+            },
+        )
+    except Exception as exc:
+        return CheckResult(
+            "bse_migrated_history_probe",
+            "WARN",
+            f"migration continuity not yet proven: {exc}",
+            {},
+        )
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="v0.2 联网合并前端到端验收")
+    parser.add_argument("--provider", choices=["auto", "eastmoney", "akshare", "tushare"], default="auto")
+    parser.add_argument("--benchmark-provider", choices=["auto", "eastmoney", "akshare"], default="auto")
+    parser.add_argument("--benchmark", choices=sorted(BENCHMARKS), default="csi300")
+    parser.add_argument("--reference-etf", choices=[""] + sorted(ETFS), default="csi300_etf_sh")
+    parser.add_argument("--codes", default="600519,000001,300750")
+    parser.add_argument("--db", default="market.duckdb")
+    parser.add_argument("--with-baostock", action="store_true")
+    parser.add_argument("--skip-duckdb", action="store_true")
+    parser.add_argument("--membership-overlap-floor", type=float, default=0.90)
+    parser.add_argument("--allow-missing-bj", action="store_true", help="legacy escape hatch: relax BSE identity requirement as well")
+    parser.add_argument(
+        "--allow-missing-bj-history",
+        action="store_true",
+        help="keep BSE identity hard but downgrade long-window BSE daily history to WARN when no TUSHARE_TOKEN is configured",
+    )
+    parser.add_argument("--json-out", default="output/live_validation.json")
+    args = parser.parse_args()
+
+    market = make_provider(args.provider)
+    reference = make_benchmark_provider(args.benchmark_provider)
+    master = None
+    if args.with_baostock:
+        raw = BaostockSecurityMasterProvider()
+        master = CachedSecurityMasterProvider(raw, DuckDBSecuritySnapshotStore(args.db))
+        universe = BaostockBseUniverseProvider(master)
+        market = ProviderChain([
+            RetryingProvider(BaostockHistoryProvider(), attempts=2),
+            RetryingProvider(TencentHistoryProvider(), attempts=2),
+            universe,
+            market,
+        ])
+        reference = BenchmarkProviderChain([BaostockBenchmarkProvider(), reference])
+
+    identity_markets = ("SH", "SZ") if args.allow_missing_bj else ("SH", "SZ", "BJ")
+    token_backed_bj = bool(os.getenv("TUSHARE_TOKEN", "").strip())
+    if args.allow_missing_bj_history and not token_backed_bj and "BJ" in identity_markets:
+        daily_required_markets = tuple(m for m in identity_markets if m != "BJ")
+        daily_warning_markets = ("BJ",)
+    else:
+        daily_required_markets = identity_markets
+        daily_warning_markets = ()
+
+    report = run_live_validation(
+        market,
+        reference,
+        benchmark=args.benchmark,
+        reference_etf=args.reference_etf,
+        representative_codes=tuple(x.strip().zfill(6) for x in args.codes.split(",") if x.strip()),
+        security_master_provider=master,
+        persistence_probe=None if args.skip_duckdb else duckdb_probe(args.db),
+        require_markets=identity_markets,
+        daily_required_markets=daily_required_markets,
+        daily_warning_markets=daily_warning_markets,
+        membership_overlap_floor=args.membership_overlap_floor,
+    )
+    if args.provider == "auto":
+        report.checks.append(hosted_universe_probe())
+        report.checks.append(tencent_spot_probe())
+    if args.with_baostock:
+        report.checks.append(bse_migration_probe())
+
+    payload = report.to_dict()
+    print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+    out = Path(args.json_out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    raise SystemExit(0 if report.ok else 2)
+
+
+if __name__ == "__main__":
+    main()

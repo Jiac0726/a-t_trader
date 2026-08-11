@@ -1,0 +1,83 @@
+name: v0.2 live merge gate
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - "app/**"
+      - "backtest/**"
+      - "calibration/**"
+      - "core/**"
+      - "data/**"
+      - "dataset/**"
+      - "features/**"
+      - "providers/**"
+      - "scanner/**"
+      - "scoring/**"
+      - "storage/**"
+      - "validation/**"
+      - "tests/**"
+      - "requirements.txt"
+      - "pyproject.toml"
+      - ".github/workflows/live-validation.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  offline-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install core test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pytest
+      - name: Run unit and regression tests
+        run: python -m pytest -q
+      - name: Compile Python modules
+        run: python -m compileall -q app backtest calibration core data dataset features providers scanner scoring storage validation tests
+
+  live-data-validation:
+    needs: offline-regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # Optional authorized fallback. When this secret is absent the value is
+      # empty and the provider is not added to the auto chain. With a token,
+      # BSE long-history validation becomes hard again automatically.
+      TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install live validation dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt akshare "baostock>=0.9.3"
+      - name: Run real A-share merge gate
+        run: |
+          python -m app.live_validate_cli \
+            --provider auto \
+            --benchmark-provider auto \
+            --benchmark csi300 \
+            --reference-etf csi300_etf_sh \
+            --with-baostock \
+            --allow-missing-bj-history \
+            --json-out output/live_validation.json
+      - name: Upload live validation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-validation-report
+          path: output/live_validation.json
+          if-no-files-found: warn
+          retention-days: 14

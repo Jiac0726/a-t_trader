@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 import pandas as pd
 
-from .base import MarketDataError, MarketDataProvider
+from .base import MarketDataError, MarketDataProvider, NoMarketData
 
 
 class AkshareProvider(MarketDataProvider):
@@ -22,6 +22,46 @@ class AkshareProvider(MarketDataProvider):
             return value.strftime("%Y%m%d")
         return str(value).replace("-", "")[:8]
 
+    @staticmethod
+    def _market(code: str) -> str:
+        code = str(code).zfill(6)
+        if code.startswith(("4", "8", "92")):
+            return "BJ"
+        if code.startswith(("5", "6", "9")):
+            return "SH"
+        return "SZ"
+
+    def stock_list(self) -> pd.DataFrame:
+        ak = self._ak()
+        try:
+            raw = ak.stock_zh_a_spot_em()
+        except Exception as exc:
+            raise MarketDataError(f"AKShare stock list failed: {exc}") from exc
+        if raw is None or raw.empty:
+            raise MarketDataError("AKShare returned empty A-share universe")
+        rename = {
+            "代码": "code",
+            "名称": "name",
+            "最新价": "latest",
+            "涨跌幅": "pct_change",
+            "成交量": "volume",
+            "成交额": "amount",
+            "换手率": "turnover",
+            "最高": "high",
+            "最低": "low",
+        }
+        out = raw.rename(columns=rename).copy()
+        if "code" not in out.columns or "name" not in out.columns:
+            raise MarketDataError("AKShare stock-list schema changed")
+        out["code"] = out["code"].astype(str).str.zfill(6)
+        out["market"] = out["code"].map(self._market)
+        keep = [c for c in ["code", "name", "market", "latest", "pct_change", "volume", "amount", "turnover", "high", "low"] if c in out.columns]
+        out = out[keep].drop_duplicates("code").sort_values("code").reset_index(drop=True)
+        if len(out) < 3000:
+            raise MarketDataError(f"AKShare A-share universe suspiciously small: {len(out)}")
+        out.attrs["provider"] = self.name
+        return out
+
     def history(self, code: str, start: date | str, end: date | str, interval: str = "1d", adjust: str = "qfq") -> pd.DataFrame:
         if interval != "1d":
             raise MarketDataError("AKShare fallback currently supports daily history only in this MVP")
@@ -37,7 +77,7 @@ class AkshareProvider(MarketDataProvider):
         except Exception as exc:
             raise MarketDataError(f"AKShare request failed for {code}: {exc}") from exc
         if raw is None or raw.empty:
-            raise MarketDataError(f"AKShare returned no data for {code}")
+            raise NoMarketData(f"AKShare returned no data for {code}")
 
         rename = {
             "日期": "datetime",

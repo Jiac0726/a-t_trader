@@ -7,23 +7,44 @@ from typing import Any
 import pandas as pd
 import requests
 
-from .base import MarketDataError, MarketDataProvider
+from .base import MarketDataError, MarketDataProvider, NoMarketData
 
 
 class EastmoneyProvider(MarketDataProvider):
-    """Direct Eastmoney K-line adapter.
+    """Direct Eastmoney market-data adapter.
 
-    This keeps the market-data layer replaceable. Public endpoints can change or
-    rate-limit, so this provider must never be assumed to be permanently stable.
+    Public endpoints can change or rate-limit, so this provider is isolated and
+    can be replaced without touching the scoring layer.
     """
 
     name = "eastmoney-direct"
-    _URL = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
+    # AKShare and other current adapters use several numbered push2his hosts for
+    # equivalent K-line endpoints. Keep history failover independent from the
+    # current-list host preference so one blocked node does not poison both.
+    _HISTORY_URLS = (
+        "https://push2his.eastmoney.com/api/qt/stock/kline/get",
+        "https://33.push2his.eastmoney.com/api/qt/stock/kline/get",
+        "https://63.push2his.eastmoney.com/api/qt/stock/kline/get",
+    )
+    # Backward-compatible primary URL for the benchmark adapter. Individual
+    # stock history uses _HISTORY_URLS via _get_history_json.
+    _HISTORY_URL = _HISTORY_URLS[0]
+    # Eastmoney routes the same public clist service through several numbered
+    # hosts. Cloud/CI egress IPs are sometimes throttled on only one of them,
+    # so rotate across known-compatible HTTPS hosts before declaring failure.
+    _LIST_URLS = (
+        "https://push2.eastmoney.com/api/qt/clist/get",
+        "https://82.push2.eastmoney.com/api/qt/clist/get",
+        "https://99.push2.eastmoney.com/api/qt/clist/get",
+        "https://80.push2.eastmoney.com/api/qt/clist/get",
+    )
 
     def __init__(self, timeout: float = 12.0, min_interval: float = 0.35):
         self.timeout = timeout
         self.min_interval = min_interval
         self._last_call = 0.0
+        self._preferred_list_url: str | None = None
+        self._preferred_history_url: str | None = None
         self.session = requests.Session()
         self.session.headers.update(
             {
@@ -35,9 +56,23 @@ class EastmoneyProvider(MarketDataProvider):
     @staticmethod
     def _secid(code: str) -> str:
         code = str(code).zfill(6)
+        # Eastmoney's A-share historical endpoint uses market-code 1 for
+        # Shanghai securities and 0 for Shenzhen/Beijing. BSE 920xxx must be
+        # handled before the generic 9xxxxx Shanghai branch.
+        if code.startswith(("4", "8", "92")):
+            return f"0.{code}"
         if code.startswith(("5", "6", "9")):
             return f"1.{code}"
         return f"0.{code}"
+
+    @staticmethod
+    def _market(code: str) -> str:
+        code = str(code).zfill(6)
+        if code.startswith(("4", "8", "92")):
+            return "BJ"
+        if code.startswith(("5", "6", "9")):
+            return "SH"
+        return "SZ"
 
     @staticmethod
     def _date_str(value: date | str) -> str:
@@ -63,6 +98,122 @@ class EastmoneyProvider(MarketDataProvider):
             time.sleep(wait)
         self._last_call = time.time()
 
+    def _get_json(self, url: str, params: dict[str, Any]) -> dict[str, Any]:
+        self._throttle()
+        try:
+            response = self.session.get(url, params=params, timeout=self.timeout)
+            response.raise_for_status()
+            return response.json()
+        except Exception as exc:
+            raise MarketDataError(f"Eastmoney request failed: {exc}") from exc
+
+    def _get_json_any(self, urls: tuple[str, ...], params: dict[str, Any]) -> dict[str, Any]:
+        errors: list[str] = []
+        ordered = list(urls)
+        if self._preferred_list_url in ordered:
+            ordered.remove(self._preferred_list_url)
+            ordered.insert(0, self._preferred_list_url)
+        for url in ordered:
+            try:
+                payload = self._get_json(url, params)
+                if payload.get("data") is None:
+                    raise MarketDataError("Eastmoney returned data=null")
+                self._preferred_list_url = url
+                return payload
+            except Exception as exc:
+                errors.append(f"{url.split('/')[2]}: {exc}")
+                if self._preferred_list_url == url:
+                    self._preferred_list_url = None
+        raise MarketDataError("Eastmoney host rotation exhausted: " + " | ".join(errors))
+
+    def _get_history_json(self, params: dict[str, Any]) -> dict[str, Any]:
+        errors: list[str] = []
+        ordered = list(self._HISTORY_URLS)
+        if self._preferred_history_url in ordered:
+            ordered.remove(self._preferred_history_url)
+            ordered.insert(0, self._preferred_history_url)
+        for url in ordered:
+            try:
+                payload = self._get_json(url, params)
+                if payload.get("data") is None:
+                    raise MarketDataError("Eastmoney history returned data=null")
+                self._preferred_history_url = url
+                return payload
+            except Exception as exc:
+                errors.append(f"{url.split('/')[2]}: {exc}")
+                if self._preferred_history_url == url:
+                    self._preferred_history_url = None
+        raise MarketDataError("Eastmoney history host rotation exhausted: " + " | ".join(errors))
+
+    def stock_list(self) -> pd.DataFrame:
+        page_size = 100
+        max_pages = 100
+        base_params: dict[str, Any] = {
+            "pz": str(page_size),
+            "po": "1",
+            "np": "1",
+            "ut": "bd1d9ddb04089700cf9c27f6f7426281",
+            "fltt": "2",
+            "invt": "2",
+            "fid": "f12",
+            "fs": "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048",
+            "fields": "f12,f14,f13,f2,f3,f5,f6,f8,f15,f16",
+        }
+        diff: list[dict[str, Any]] = []
+        expected_total: int | None = None
+        for page in range(1, max_pages + 1):
+            params = {**base_params, "pn": str(page)}
+            payload = self._get_json_any(self._LIST_URLS, params)
+            data = payload.get("data") or {}
+            page_rows = data.get("diff") or []
+            if expected_total is None:
+                try:
+                    expected_total = int(data.get("total") or 0) or None
+                except (TypeError, ValueError):
+                    expected_total = None
+            if not page_rows:
+                break
+            diff.extend(page_rows)
+            if expected_total is not None and len(diff) >= expected_total:
+                break
+            if len(page_rows) < page_size:
+                break
+        if not diff:
+            raise MarketDataError("Eastmoney returned empty A-share universe")
+        rows = []
+        for item in diff:
+            code = str(item.get("f12", "")).zfill(6)
+            if not code.isdigit() or len(code) != 6:
+                continue
+            rows.append(
+                {
+                    "code": code,
+                    "name": str(item.get("f14") or ""),
+                    "market": self._market(code),
+                    "latest": item.get("f2"),
+                    "pct_change": item.get("f3"),
+                    "volume": item.get("f5"),
+                    "amount": item.get("f6"),
+                    "turnover": item.get("f8"),
+                    "high": item.get("f15"),
+                    "low": item.get("f16"),
+                }
+            )
+        out = pd.DataFrame(rows).drop_duplicates("code").sort_values("code").reset_index(drop=True)
+        if out.empty:
+            raise MarketDataError("Eastmoney A-share universe could not be parsed")
+        if len(out) < 3000:
+            suffix = f"; upstream total={expected_total}" if expected_total is not None else ""
+            raise MarketDataError(f"Eastmoney A-share universe suspiciously small: {len(out)}{suffix}")
+        if expected_total is not None and len(out) < min(3000, int(expected_total * 0.9)):
+            raise MarketDataError(
+                f"Eastmoney A-share universe incomplete after pagination: parsed={len(out)}, upstream_total={expected_total}"
+            )
+        for col in ["latest", "pct_change", "volume", "amount", "turnover", "high", "low"]:
+            out[col] = pd.to_numeric(out[col], errors="coerce")
+        out.attrs["provider"] = self.name
+        return out
+
     def history(self, code: str, start: date | str, end: date | str, interval: str = "1d", adjust: str = "qfq") -> pd.DataFrame:
         code = str(code).zfill(6)
         params: dict[str, Any] = {
@@ -75,18 +226,15 @@ class EastmoneyProvider(MarketDataProvider):
             "fields1": "f1,f2,f3,f4,f5,f6",
             "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
         }
-        self._throttle()
         try:
-            response = self.session.get(self._URL, params=params, timeout=self.timeout)
-            response.raise_for_status()
-            payload = response.json()
-        except Exception as exc:
+            payload = self._get_history_json(params)
+        except MarketDataError as exc:
             raise MarketDataError(f"Eastmoney request failed for {code}: {exc}") from exc
 
         data = payload.get("data") or {}
         klines = data.get("klines") or []
         if not klines:
-            raise MarketDataError(f"Eastmoney returned no K-line data for {code}")
+            raise NoMarketData(f"Eastmoney returned no K-line data for {code}")
 
         rows = []
         for line in klines:
@@ -120,8 +268,8 @@ class EastmoneyProvider(MarketDataProvider):
         df.attrs["name"] = data.get("name", "")
         df.attrs["code"] = data.get("code", code)
         df.attrs["provider"] = self.name
+        df.attrs["eastmoney_history_url"] = self._preferred_history_url or ""
         return df
 
     def stock_name(self, code: str) -> str:
-        # Name is returned with K-line payload; resolving it separately would add another endpoint.
         return ""

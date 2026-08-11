@@ -4,13 +4,23 @@ from datetime import date
 import numpy as np
 import pandas as pd
 
-from .base import MarketDataProvider
+from .base import MarketDataProvider, NoMarketData
 
 
 class DemoProvider(MarketDataProvider):
     """Deterministic offline data for testing UI and scoring logic."""
 
     name = "demo"
+
+    def stock_list(self) -> pd.DataFrame:
+        codes = ["300059", "601899", "601138", "000063", "300750", "300308"]
+        return pd.DataFrame(
+            {
+                "code": codes,
+                "name": [f"DEMO-{c}" for c in codes],
+                "market": ["SZ", "SH", "SH", "SZ", "SZ", "SZ"],
+            }
+        )
 
     def history(self, code: str, start: date | str, end: date | str, interval: str = "1d", adjust: str = "qfq") -> pd.DataFrame:
         code = str(code).zfill(6)
@@ -47,6 +57,8 @@ class DemoProvider(MarketDataProvider):
             volume = rng.integers(20_000, 500_000, n)
             amount = volume * close
         df = pd.DataFrame({"datetime": idx, "open": open_, "high": high, "low": low, "close": close, "volume": volume, "amount": amount})
+        if df.empty:
+            raise NoMarketData(f"Demo range has no market rows for {code}")
         prev = df["close"].shift(1)
         df["amplitude"] = (df["high"] - df["low"]) / prev * 100
         df["pct_change"] = df["close"].pct_change() * 100
